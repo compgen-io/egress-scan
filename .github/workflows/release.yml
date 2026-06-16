@@ -14,9 +14,9 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
 
@@ -43,7 +43,7 @@ jobs:
         run: sha256sum egress-scan.linux_amd64 egress-scan-ocr.linux_amd64 > checksums.txt
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             bin/egress-scan.linux_amd64
