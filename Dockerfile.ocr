@@ -1,0 +1,24 @@
+# OCR image (Debian 13): links Tesseract/Leptonica so images and scanned PDFs can
+# be read. Larger and not statically linked. Build/run with --ocr.
+FROM debian:13 AS build
+ARG GO_VERSION=1.25.0
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl git pkg-config build-essential \
+        libtesseract-dev libleptonica-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN ARCH="$(dpkg --print-architecture)" \
+    && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" -o /tmp/go.tgz \
+    && tar -C /usr/local -xzf /tmp/go.tgz && rm /tmp/go.tgz
+ENV PATH="/usr/local/go/bin:${PATH}"
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=1 go build -tags ocr -trimpath -o /out/egress-scan .
+
+FROM debian:13-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        tesseract-ocr tesseract-ocr-eng libtesseract5 libleptonica6 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /out/egress-scan /usr/local/bin/egress-scan
+ENTRYPOINT ["/usr/local/bin/egress-scan"]

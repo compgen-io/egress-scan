@@ -1,0 +1,52 @@
+name: release
+
+# Build both linux/amd64 binaries and attach them to a GitHub Release whenever a
+# vX.Y.Z tag is pushed. The runner is linux/amd64, so the cgo OCR build is native.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Install Tesseract (for the OCR build + tests)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libtesseract-dev libleptonica-dev tesseract-ocr tesseract-ocr-eng
+
+      - name: Test (no OCR)
+        run: make test
+
+      - name: Test (OCR)
+        run: make test-ocr
+
+      - name: Build static binary (no OCR)
+        run: make build-linux
+
+      - name: Build OCR binary
+        run: make build-ocr
+
+      - name: Checksums
+        working-directory: bin
+        run: sha256sum egress-scan.linux_amd64 egress-scan-ocr.linux_amd64 > checksums.txt
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bin/egress-scan.linux_amd64
+            bin/egress-scan-ocr.linux_amd64
+            bin/checksums.txt
+          generate_release_notes: true

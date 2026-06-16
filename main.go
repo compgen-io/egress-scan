@@ -1,0 +1,189 @@
+// Command egress-scan inspects an egress tar artifact for leaks of internal
+// biobank identifiers (IB-IDs). It runs as a standalone workflow step: point it
+// at the tar, optionally give it the approved-ID set, and it emits a JSON report
+// with a plain-text recommendation and a 0-100 risk score.
+//
+// Exit codes: 0 = no novel IB-IDs, 1 = novel IB-IDs found, 2 = fatal error.
+package main
+
+import (
+	"encoding/json"
+	"flag"
+	"fmt"
+	"os"
+	"sort"
+
+	"github.com/compgen-io/egress-scan/internal/approved"
+	"github.com/compgen-io/egress-scan/internal/idmatch"
+	"github.com/compgen-io/egress-scan/internal/risk"
+	"github.com/compgen-io/egress-scan/internal/scan"
+)
+
+// Report is the JSON document written to --out (or stdout).
+type Report struct {
+	Recommendation string           `json:"recommendation"`
+	RiskScore      int              `json:"risk_score"`
+	RiskLevel      string           `json:"risk_level"`
+	Summary        string           `json:"summary"`
+	Reasons        []string         `json:"reasons"`
+	IBIDScan       IBIDScan         `json:"ib_id_scan"`
+	Findings       []scan.Finding   `json:"findings"`
+	Unscanned      []scan.Unscanned `json:"unscanned"`
+	ScanStats      scan.Stats       `json:"scan_stats"`
+}
+
+// IBIDScan mirrors the ib_id_scan block produced by risk_scoring.py.
+type IBIDScan struct {
+	ApprovedSource     string   `json:"approved_source"`
+	ApprovedIBIDCount  int      `json:"approved_ib_id_count"`
+	EgressIBIDCount    int      `json:"egress_ib_id_count"`
+	OverlapIBIDCount   int      `json:"overlap_ib_id_count"`
+	NovelIBIDCount     int      `json:"novel_ib_id_count"`
+	NovelIBIDsSample   []string `json:"novel_ib_ids_sample"`
+	OverlapIBIDsSample []string `json:"overlap_ib_ids_sample"`
+}
+
+func main() {
+	var (
+		tarPath     = flag.String("tar", "", "path to the egress tar file to scan (required)")
+		approvedIDs = flag.String("approved-ids", "", "file of approved IB-IDs to compare against")
+		approvedDir = flag.String("approved-dir", "", "directory of approved dataset files to extract IB-IDs from")
+		ibPattern   = flag.String("ib-pattern", idmatch.DefaultIBPattern, "IB-ID regex (overridable like IB_ID_PATTERN)")
+		maxBytes    = flag.Int64("max-bytes", 100*1024*1024, "per-file size cap; larger files are flagged not read")
+		maxDepth    = flag.Int("max-depth", 12, "maximum nested-archive recursion depth")
+		ocr         = flag.Bool("ocr", false, "OCR images for text (requires a binary built with -tags ocr)")
+		outPath     = flag.String("out", "", "write JSON report here (default: stdout)")
+		pretty      = flag.Bool("pretty", true, "pretty-print JSON output")
+	)
+	flag.Parse()
+
+	if *tarPath == "" {
+		fmt.Fprintln(os.Stderr, "error: --tar is required")
+		flag.Usage()
+		os.Exit(2)
+	}
+
+	matcher, err := idmatch.New(*ibPattern)
+	if err != nil {
+		fatal("invalid --ib-pattern: %v", err)
+	}
+
+	approvedSet, src, err := approved.Load(matcher, *approvedIDs, *approvedDir)
+	if err != nil {
+		fatal("loading approved IDs: %v", err)
+	}
+
+	scanner := scan.New(scan.Config{
+		Matcher: matcher, MaxBytes: *maxBytes, MaxDepth: *maxDepth, OCR: *ocr,
+	})
+	if scanner.OCRRequestedButUnavailable() {
+		fmt.Fprintln(os.Stderr, "warning: --ocr set but this binary was built without OCR support (-tags ocr); images will be flagged unscanned")
+	}
+
+	res, err := scanner.ScanTarFile(*tarPath)
+	if err != nil {
+		fatal("scanning %s: %v", *tarPath, err)
+	}
+
+	report := buildReport(res, approvedSet, src)
+
+	out := os.Stdout
+	if *outPath != "" {
+		f, err := os.Create(*outPath)
+		if err != nil {
+			fatal("creating --out: %v", err)
+		}
+		defer f.Close()
+		out = f
+	}
+	enc := json.NewEncoder(out)
+	if *pretty {
+		enc.SetIndent("", "  ")
+	}
+	if err := enc.Encode(report); err != nil {
+		fatal("writing report: %v", err)
+	}
+
+	if report.IBIDScan.NovelIBIDCount > 0 {
+		os.Exit(1)
+	}
+}
+
+func buildReport(res *scan.Result, approvedSet map[string]struct{}, src approved.Source) Report {
+	var overlap, novel []string
+	for id := range res.EgressIDs {
+		if _, ok := approvedSet[id]; ok {
+			overlap = append(overlap, id)
+		} else {
+			novel = append(novel, id)
+		}
+	}
+	sort.Strings(overlap)
+	sort.Strings(novel)
+
+	assessment := risk.Assess(risk.Inputs{
+		TotalEgressIDs: len(res.EgressIDs),
+		OverlapIDs:     len(overlap),
+		NovelIDs:       len(novel),
+		PHIMatches:     res.PHIMatches,
+		UnscannedFiles: len(res.Unscanned),
+	})
+
+	findings := res.Findings
+	if findings == nil {
+		findings = []scan.Finding{}
+	}
+	unscanned := res.Unscanned
+	if unscanned == nil {
+		unscanned = []scan.Unscanned{}
+	}
+
+	return Report{
+		Recommendation: recommendation(len(novel), len(overlap), len(res.EgressIDs), len(res.Unscanned)),
+		RiskScore:      assessment.Score,
+		RiskLevel:      assessment.Level,
+		Summary:        assessment.Summary,
+		Reasons:        assessment.Reasons,
+		IBIDScan: IBIDScan{
+			ApprovedSource:     src.Kind,
+			ApprovedIBIDCount:  len(approvedSet),
+			EgressIBIDCount:    len(res.EgressIDs),
+			OverlapIBIDCount:   len(overlap),
+			NovelIBIDCount:     len(novel),
+			NovelIBIDsSample:   sample(novel, 20),
+			OverlapIBIDsSample: sample(overlap, 20),
+		},
+		Findings:  findings,
+		Unscanned: unscanned,
+		ScanStats: res.Stats,
+	}
+}
+
+// recommendation is the plain-text answer, tuned to what was found.
+func recommendation(novel, overlap, total, unscanned int) string {
+	switch {
+	case novel > 0:
+		return fmt.Sprintf("Check this file for potential IDs — %d novel IB-ID(s) not in approved datasets were found. Manual review required before release.", novel)
+	case total > 0:
+		return fmt.Sprintf("IB-IDs were found but all %d match approved datasets; review recommended before release.", total)
+	case unscanned > 0:
+		return fmt.Sprintf("No IB-IDs detected in scanned content, but %d file(s) could not be scanned — manual review recommended.", unscanned)
+	default:
+		return "No IB-IDs detected; low risk."
+	}
+}
+
+func sample(ids []string, n int) []string {
+	if len(ids) > n {
+		ids = ids[:n]
+	}
+	if ids == nil {
+		return []string{}
+	}
+	return ids
+}
+
+func fatal(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "error: "+format+"\n", args...)
+	os.Exit(2)
+}

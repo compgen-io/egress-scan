@@ -1,0 +1,12 @@
+# build artifacts
+/bin/
+/dist/
+/egress-scan
+/egress-scan.ocr
+*.out
+
+# transient root-level tars (testdata/ fixtures ARE committed)
+/*.tar
+
+# macOS
+.DS_Store
