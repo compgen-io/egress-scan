@@ -99,6 +99,17 @@ func TestSampleTarDataVolumeAndImages(t *testing.T) {
 	if !pdfImage {
 		t.Errorf("expected a flagged PDF-embedded image; images=%v", res.Images)
 	}
+
+	// The pickle is auto-flagged at the scan layer without being scanned.
+	pickleFlagged := false
+	for _, f := range res.Flagged {
+		if strings.HasSuffix(f.Path, ".pkl") {
+			pickleFlagged = true
+		}
+	}
+	if !pickleFlagged {
+		t.Errorf("expected the .pkl to be auto-flagged; flagged=%v", res.Flagged)
+	}
 }
 
 func hasGrid(res *Result, pathSub string, rows, cols int) bool {

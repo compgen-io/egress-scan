@@ -112,6 +112,7 @@ func BuildTar() ([]byte, error) {
 		{"report.docx", docxBytes},
 		{"data/cohort.sqlite", sqliteBytes},
 		{"data/matrix.h5", append([]byte("\x89HDF\r\n\x1a\n....."), []byte(IDRawH5+".....")...)},
+		{"models/model.pkl", []byte("\x80\x04\x95\x10\x00\x00\x00\x00\x00\x00\x00pickled-object")}, // auto-flagged
 		{"scans/form.png", pngBytes},
 		{"scans/" + NoiseImageName, noiseBytes}, // data-as-pixels -> flagged
 		{"report.pdf", pdfBytes},                // embeds the noisy + text images

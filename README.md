@@ -35,8 +35,9 @@ It checks three independent dimensions:
 | `.rds` `.RData` | string scan + data-frame/matrix dimensions via a partial R deserialiser |
 | `.pdf` | text-layer extraction **+** embedded-image noise analysis (pdfcpu) |
 | images (`.png` `.jpg` `.tiff` …) | noise/randomness analysis; **+** OCR with `--ocr` on an OCR build |
+| `.pkl` `.pickle` | **auto-flagged high-risk** (risk 100) without scanning — opaque, no aggregate-results use case |
 | any other binary | raw-bytes fallback finds literal ASCII IDs |
-| `.h5` `.mat` `.rds`-less `.npy` `.pkl` `.xls` `.doc` `.duckdb` `.7z` `.rar` | flagged **unscanned** for manual review (plus a raw pass) |
+| `.h5` `.mat` `.xls` `.doc` `.duckdb` `.7z` `.rar` | flagged **unscanned** for manual review (plus a raw pass) |
 
 Files that cannot be scanned (unsupported binaries, scanned PDFs, oversized
 files) are listed in `unscanned` and raise the risk score, so nothing is silently

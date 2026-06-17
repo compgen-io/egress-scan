@@ -62,6 +62,29 @@ func TestBuildReportPerFileRisk(t *testing.T) {
 	}
 }
 
+func TestBuildReportPickleAutoFlag(t *testing.T) {
+	res := &scan.Result{
+		EgressIDs: map[string]struct{}{},
+		Flagged: []scan.FlaggedFile{
+			{Path: "m/model.pkl", Format: "pkl", Reason: "python pickle — opaque"},
+		},
+	}
+	rep := buildReport(res, map[string]struct{}{}, approved.Source{Kind: "none"}, DefaultHighRiskThreshold)
+
+	if len(rep.FileRisks) != 1 || rep.FileRisks[0].Risk != AutoFlagRisk {
+		t.Fatalf("expected one file at risk %d; got %v", AutoFlagRisk, rep.FileRisks)
+	}
+	if rep.FileRisks[0].Reason == "" {
+		t.Errorf("expected a reason on the auto-flagged pickle; got %+v", rep.FileRisks[0])
+	}
+	if rep.TotalRisk != AutoFlagRisk {
+		t.Errorf("total risk = %d, want %d (pickle present)", rep.TotalRisk, AutoFlagRisk)
+	}
+	if len(rep.HighRiskFiles) != 1 {
+		t.Errorf("pickle should be a high-risk file; got %v", rep.HighRiskFiles)
+	}
+}
+
 func TestBuildReportLowRisk(t *testing.T) {
 	res := &scan.Result{
 		EgressIDs: map[string]struct{}{"IB-2": {}},

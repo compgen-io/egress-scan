@@ -30,6 +30,15 @@ type Unscanned struct {
 	Reason string `json:"reason"`
 }
 
+// FlaggedFile is a file flagged as high-risk by policy, without inspecting its
+// contents (e.g. a Python pickle: opaque, executable on load, no aggregate-
+// results use case). The reason is surfaced; the file is not scanned.
+type FlaggedFile struct {
+	Path   string `json:"path"`
+	Format string `json:"format"`
+	Reason string `json:"reason"`
+}
+
 // GridInfo is one rectangular data object (table/sheet/matrix/data.frame) and
 // its area, used to flag bulk-data dumps vs aggregate results.
 type GridInfo struct {
@@ -68,6 +77,7 @@ type Result struct {
 	PHIMatches int
 	Findings   []Finding
 	Unscanned  []Unscanned
+	Flagged    []FlaggedFile
 	Grids      []GridInfo
 	TotalArea  int
 	Images     []ImageInfo
@@ -231,6 +241,8 @@ func (s *Scanner) dispatch(name string, data []byte, depth int, res *Result) {
 		s.scanNpy(name, data, res)
 	case ext == ".npz":
 		s.recurseZip(name, data, depth, res) // zip of .npy members
+	case ext == ".pkl" || ext == ".pickle":
+		s.scanPickle(name, res)
 	case ext == ".pdf":
 		s.scanPDF(name, data, res)
 	case ext == ".rds" || ext == ".rdata":

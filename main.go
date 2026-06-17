@@ -31,6 +31,10 @@ import (
 // called out; operators override it with --high-risk-threshold.
 const DefaultHighRiskThreshold = 30
 
+// AutoFlagRisk is the fixed risk assigned to policy-flagged files (e.g. Python
+// pickles) regardless of content.
+const AutoFlagRisk = 100
+
 // Report is the JSON document written to --out (or stdout).
 type Report struct {
 	Recommendation string           `json:"recommendation"`
@@ -57,6 +61,7 @@ type FileRisk struct {
 	IBRisk         int    `json:"ib_risk"`          // novel/overlap IB-IDs in the file
 	DataVolumeRisk int    `json:"data_volume_risk"` // grid area/rows
 	ImageRisk      int    `json:"image_risk"`       // worst image noise
+	Reason         string `json:"reason,omitempty"` // why a file is auto-flagged (e.g. pickle)
 }
 
 // DataVolume reports grid (table/matrix/data.frame) area and its 0-1 risk: a
@@ -283,6 +288,8 @@ func buildFileRisks(res *scan.Result, approvedSet map[string]struct{}) []FileRis
 		ids, novel, overlap int
 		seen                map[string]bool
 		dataRisk, imgRisk   float64
+		flagged             bool
+		reason              string
 	}
 	files := map[string]*agg{}
 	get := func(p string) *agg {
@@ -319,15 +326,25 @@ func buildFileRisks(res *scan.Result, approvedSet map[string]struct{}) []FileRis
 			a.imgRisk = im.Noise
 		}
 	}
+	for _, f := range res.Flagged {
+		a := get(f.Path)
+		a.flagged = true
+		a.reason = f.Reason
+	}
 
 	out := make([]FileRisk, 0, len(files))
 	for path, a := range files {
 		ib := risk.Assess(risk.Inputs{TotalEgressIDs: a.ids, OverlapIDs: a.overlap, NovelIDs: a.novel}).Score
 		dv := int(math.Round(a.dataRisk * 100))
 		img := int(math.Round(a.imgRisk * 100))
+		flag := 0
+		if a.flagged {
+			flag = AutoFlagRisk
+		}
 		out = append(out, FileRisk{
-			Path: path, Risk: maxInt(ib, dv, img),
+			Path: path, Risk: maxInt(ib, dv, img, flag),
 			IBRisk: ib, DataVolumeRisk: dv, ImageRisk: img,
+			Reason: a.reason,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {

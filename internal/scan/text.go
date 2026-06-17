@@ -28,6 +28,17 @@ func (s *Scanner) scanRaw(name string, data []byte, format string, res *Result) 
 	res.Stats.Scanned++
 }
 
+// scanPickle flags a Python pickle as high-risk without reading it: pickles are
+// opaque, can execute arbitrary code on load, and have no aggregate-results use
+// case, so there's nothing to gain from scanning the bytes.
+func (s *Scanner) scanPickle(name string, res *Result) {
+	res.Flagged = append(res.Flagged, FlaggedFile{
+		Path:   name,
+		Format: formatFor(name),
+		Reason: "python pickle — opaque serialized object (executes code on load); no aggregate-results use case",
+	})
+}
+
 // scanRDS handles .rds/.RData. R stores every CHARSXP string inline as raw bytes;
 // the only encoding is the outer gzip/bzip2/xz wrapper. Decompressing and raw-
 // scanning therefore catches IDs in every string variable, factor level, and
@@ -68,11 +79,10 @@ var imageExts = map[string]struct{}{
 }
 
 // Heavy/opaque binaries we deliberately do not parse; flagged for manual review.
-// (.npy/.npz are handled for area + ID scanning, so they're not here.)
+// (.npy/.npz are scanned for area+IDs; .pkl/.pickle are auto-flagged high-risk.)
 var unsupportedBinaryExts = map[string]struct{}{
-	".h5": {}, ".hdf5": {}, ".mat": {}, ".pkl": {},
-	".pickle": {}, ".xls": {}, ".doc": {}, ".ppt": {}, ".duckdb": {},
-	".7z": {}, ".rar": {}, ".feather": {}, ".sav": {}, ".dta": {},
+	".h5": {}, ".hdf5": {}, ".mat": {}, ".xls": {}, ".doc": {}, ".ppt": {},
+	".duckdb": {}, ".7z": {}, ".rar": {}, ".feather": {}, ".sav": {}, ".dta": {},
 }
 
 func isTextExt(ext string) bool              { _, ok := textExts[ext]; return ok }
