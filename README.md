@@ -61,6 +61,9 @@ Flags:
   [Authenticating the S3 request](#authenticating-the-s3-request). Object-count
   and size caps come from `IB_SCAN_MAX_APPROVED_OBJECTS` / `IB_SCAN_MAX_OBJECT_BYTES`.
   Precedence: `--approved-ids` > `--approved-dir` > S3 > `APPROVED_IB_IDS`.
+- `--aws-region` — region for the S3 client (default: `$AWS_REGION`, then
+  `$AWS_DEFAULT_REGION`). Required when `--approved-s3-bucket` is set; the tool
+  errors early if no region can be resolved.
 - `--ib-pattern` — override the IB-ID regex.
 - `--max-bytes` — per-file size cap (default 100 MiB); larger files are flagged.
 - `--max-depth` — nested-archive recursion guard (default 12).
@@ -97,8 +100,9 @@ to the approved-datasets prefix and set **no** credentials in the container:
   "Resource": ["arn:aws:s3:::APPROVED_BUCKET", "arn:aws:s3:::APPROVED_BUCKET/PREFIX/*"] }
 ```
 
-The region comes from `AWS_REGION` (or the shared config). No bucket configured →
-no AWS calls and no credentials needed at all.
+The region comes from `--aws-region`, else `AWS_REGION` / `AWS_DEFAULT_REGION`,
+else the shared config; if none resolves the tool errors before making any call.
+No bucket configured → no AWS calls and no credentials needed at all.
 
 ## Risk scoring
 

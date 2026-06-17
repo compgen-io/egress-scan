@@ -97,6 +97,7 @@ func main() {
 		approvedDir = flag.String("approved-dir", "", "directory of approved dataset files to extract IB-IDs from")
 		s3Bucket    = flag.String("approved-s3-bucket", os.Getenv("APPROVED_DATASETS_BUCKET"), "approved-datasets S3 bucket (enables S3 scan when set)")
 		s3Prefix    = flag.String("approved-s3-prefix", os.Getenv("APPROVED_DATASETS_PREFIX"), "S3 key prefix to scan for approved IB-IDs")
+		awsRegion   = flag.String("aws-region", firstEnv("AWS_REGION", "AWS_DEFAULT_REGION"), "AWS region for the approved-datasets S3 client (default: $AWS_REGION / $AWS_DEFAULT_REGION)")
 		ibPattern   = flag.String("ib-pattern", idmatch.DefaultIBPattern, "IB-ID regex (overridable like IB_ID_PATTERN)")
 		maxBytes    = flag.Int64("max-bytes", 100*1024*1024, "per-file size cap; larger files are flagged not read")
 		maxDepth    = flag.Int("max-depth", 12, "maximum nested-archive recursion depth")
@@ -130,9 +131,16 @@ func main() {
 	// Build an S3 client only when a bucket is configured and no higher-precedence
 	// source (file/dir) is set, so the default path needs no AWS credentials.
 	if *s3Bucket != "" && *approvedIDs == "" && *approvedDir == "" {
-		cfg, cerr := awsconfig.LoadDefaultConfig(ctx)
+		var loadOpts []func(*awsconfig.LoadOptions) error
+		if *awsRegion != "" {
+			loadOpts = append(loadOpts, awsconfig.WithRegion(*awsRegion))
+		}
+		cfg, cerr := awsconfig.LoadDefaultConfig(ctx, loadOpts...)
 		if cerr != nil {
 			fatal("loading AWS config: %v", cerr)
+		}
+		if cfg.Region == "" {
+			fatal("no AWS region: set --aws-region or AWS_REGION (required for --approved-s3-bucket)")
 		}
 		opts.S3 = s3.NewFromConfig(cfg)
 	}
@@ -402,6 +410,16 @@ func sample(ids []string, n int) []string {
 		return []string{}
 	}
 	return ids
+}
+
+// firstEnv returns the first non-empty environment variable among names.
+func firstEnv(names ...string) string {
+	for _, n := range names {
+		if v := os.Getenv(n); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // envInt reads a positive integer from the environment, or returns def.
