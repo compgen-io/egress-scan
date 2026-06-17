@@ -119,8 +119,23 @@ with `--high-risk-threshold`), and the `recommendation` names them.
 - **Default** (`Dockerfile`) — `CGO_ENABLED=0`, pure-Go static binary, no OCR.
   Cross-compiles from any host.
 - **OCR** (`Dockerfile.ocr`, `-tags ocr`) — links Tesseract/Leptonica for image
-  and scanned-PDF text. cgo, so it builds natively per-arch and needs Tesseract +
-  tessdata at runtime.
+  and scanned-PDF text. cgo, so it builds natively per-arch.
+
+#### OCR dependencies (Debian/Ubuntu)
+
+The default build needs none of these. The OCR build does — install them before
+`make build-ocr` (the devcontainer and `Dockerfile.ocr` already do):
+
+```sh
+# build time (headers + toolchain)
+sudo apt-get install -y build-essential pkg-config libtesseract-dev libleptonica-dev
+# run time (engine + English language data)
+sudo apt-get install -y tesseract-ocr tesseract-ocr-eng
+```
+
+Runtime needs `tesseract-ocr` plus at least one language pack (`tesseract-ocr-eng`)
+so `tessdata` is present; add other `tesseract-ocr-<lang>` packs as needed. On
+macOS via Homebrew: `brew install tesseract` (provides both headers and runtime).
 
 ### Makefile
 
