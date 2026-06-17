@@ -42,6 +42,11 @@ Flags:
 - `--approved-ids FILE` — text file of approved IB-IDs to compare against.
 - `--approved-dir DIR` — directory of approved dataset files to extract IDs from.
   (Or set `APPROVED_IB_IDS=IB-1,IB-2` in the environment.)
+- `--approved-s3-bucket` / `--approved-s3-prefix` — scan an approved-datasets S3
+  prefix for IDs (off unless a bucket is set; env: `APPROVED_DATASETS_BUCKET`,
+  `APPROVED_DATASETS_PREFIX`). Uses the default AWS credential chain. Object-count
+  and size caps come from `IB_SCAN_MAX_APPROVED_OBJECTS` / `IB_SCAN_MAX_OBJECT_BYTES`.
+  Precedence: `--approved-ids` > `--approved-dir` > S3 > `APPROVED_IB_IDS`.
 - `--ib-pattern` — override the IB-ID regex.
 - `--max-bytes` — per-file size cap (default 100 MiB); larger files are flagged.
 - `--max-depth` — nested-archive recursion guard (default 12).

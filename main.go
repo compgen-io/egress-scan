@@ -7,11 +7,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
+
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"github.com/compgen-io/egress-scan/internal/approved"
 	"github.com/compgen-io/egress-scan/internal/idmatch"
@@ -48,6 +53,8 @@ func main() {
 		tarPath     = flag.String("tar", "", "path to the egress tar file to scan (required)")
 		approvedIDs = flag.String("approved-ids", "", "file of approved IB-IDs to compare against")
 		approvedDir = flag.String("approved-dir", "", "directory of approved dataset files to extract IB-IDs from")
+		s3Bucket    = flag.String("approved-s3-bucket", os.Getenv("APPROVED_DATASETS_BUCKET"), "approved-datasets S3 bucket (enables S3 scan when set)")
+		s3Prefix    = flag.String("approved-s3-prefix", os.Getenv("APPROVED_DATASETS_PREFIX"), "S3 key prefix to scan for approved IB-IDs")
 		ibPattern   = flag.String("ib-pattern", idmatch.DefaultIBPattern, "IB-ID regex (overridable like IB_ID_PATTERN)")
 		maxBytes    = flag.Int64("max-bytes", 100*1024*1024, "per-file size cap; larger files are flagged not read")
 		maxDepth    = flag.Int("max-depth", 12, "maximum nested-archive recursion depth")
@@ -68,7 +75,26 @@ func main() {
 		fatal("invalid --ib-pattern: %v", err)
 	}
 
-	approvedSet, src, err := approved.Load(matcher, *approvedIDs, *approvedDir)
+	ctx := context.Background()
+	opts := approved.Options{
+		IDsFile:        *approvedIDs,
+		Dir:            *approvedDir,
+		S3Bucket:       *s3Bucket,
+		S3Prefix:       *s3Prefix,
+		MaxObjects:     envInt("IB_SCAN_MAX_APPROVED_OBJECTS", 500),
+		MaxObjectBytes: int64(envInt("IB_SCAN_MAX_OBJECT_BYTES", 5*1024*1024)),
+	}
+	// Build an S3 client only when a bucket is configured and no higher-precedence
+	// source (file/dir) is set, so the default path needs no AWS credentials.
+	if *s3Bucket != "" && *approvedIDs == "" && *approvedDir == "" {
+		cfg, cerr := awsconfig.LoadDefaultConfig(ctx)
+		if cerr != nil {
+			fatal("loading AWS config: %v", cerr)
+		}
+		opts.S3 = s3.NewFromConfig(cfg)
+	}
+
+	approvedSet, src, err := approved.Load(ctx, matcher, opts)
 	if err != nil {
 		fatal("loading approved IDs: %v", err)
 	}
@@ -181,6 +207,19 @@ func sample(ids []string, n int) []string {
 		return []string{}
 	}
 	return ids
+}
+
+// envInt reads a positive integer from the environment, or returns def.
+func envInt(name string, def int) int {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
 }
 
 func fatal(format string, args ...any) {
