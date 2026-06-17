@@ -23,7 +23,7 @@ func TestBuildReportPerFileRisk(t *testing.T) {
 	}
 	approvedSet := map[string]struct{}{"IB-2": {}}
 
-	rep := buildReport(res, approvedSet, approved.Source{Kind: "ids_file", Count: 1})
+	rep := buildReport(res, approvedSet, approved.Source{Kind: "ids_file", Count: 1}, DefaultHighRiskThreshold)
 
 	byPath := map[string]FileRisk{}
 	for _, fr := range rep.FileRisks {
@@ -53,6 +53,13 @@ func TestBuildReportPerFileRisk(t *testing.T) {
 	if rep.HighRiskFiles[0].Path != "big.csv" {
 		t.Errorf("highest-risk file = %q, want big.csv", rep.HighRiskFiles[0].Path)
 	}
+
+	// A higher threshold (80) drops the 35-risk file, keeping big.csv (100) and
+	// doc.pdf (90).
+	repHi := buildReport(res, approvedSet, approved.Source{Kind: "ids_file", Count: 1}, 80)
+	if len(repHi.HighRiskFiles) != 2 {
+		t.Errorf("threshold 80: high-risk files = %d (%v), want 2", len(repHi.HighRiskFiles), repHi.HighRiskFiles)
+	}
 }
 
 func TestBuildReportLowRisk(t *testing.T) {
@@ -60,11 +67,11 @@ func TestBuildReportLowRisk(t *testing.T) {
 		EgressIDs: map[string]struct{}{"IB-2": {}},
 		Findings:  []scan.Finding{{Path: "a.csv", ID: "IB-2"}},
 	}
-	rep := buildReport(res, map[string]struct{}{"IB-2": {}}, approved.Source{Kind: "ids_file"})
+	rep := buildReport(res, map[string]struct{}{"IB-2": {}}, approved.Source{Kind: "ids_file"}, DefaultHighRiskThreshold)
 	if len(rep.HighRiskFiles) != 0 {
 		t.Errorf("expected no high-risk files for an all-approved tar; got %v", rep.HighRiskFiles)
 	}
-	if rep.TotalRisk > HighRiskThreshold {
+	if rep.TotalRisk > DefaultHighRiskThreshold {
 		t.Errorf("total risk %d should be <= threshold for all-approved IDs", rep.TotalRisk)
 	}
 }

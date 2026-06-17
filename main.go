@@ -27,8 +27,9 @@ import (
 	"github.com/compgen-io/egress-scan/internal/scan"
 )
 
-// HighRiskThreshold is the per-file total risk above which a file is called out.
-const HighRiskThreshold = 30
+// DefaultHighRiskThreshold is the default per-file/tar risk above which a file is
+// called out; operators override it with --high-risk-threshold.
+const DefaultHighRiskThreshold = 30
 
 // Report is the JSON document written to --out (or stdout).
 type Report struct {
@@ -94,6 +95,7 @@ func main() {
 		ibPattern   = flag.String("ib-pattern", idmatch.DefaultIBPattern, "IB-ID regex (overridable like IB_ID_PATTERN)")
 		maxBytes    = flag.Int64("max-bytes", 100*1024*1024, "per-file size cap; larger files are flagged not read")
 		maxDepth    = flag.Int("max-depth", 12, "maximum nested-archive recursion depth")
+		threshold   = flag.Int("high-risk-threshold", DefaultHighRiskThreshold, "per-file/tar risk (0-100) above which a file is flagged high-risk and the exit code is non-zero")
 		ocr         = flag.Bool("ocr", false, "OCR images for text (requires a binary built with -tags ocr)")
 		outPath     = flag.String("out", "", "write JSON report here (default: stdout)")
 		pretty      = flag.Bool("pretty", true, "pretty-print JSON output")
@@ -147,7 +149,7 @@ func main() {
 		fatal("scanning %s: %v", *tarPath, err)
 	}
 
-	report := buildReport(res, approvedSet, src)
+	report := buildReport(res, approvedSet, src, *threshold)
 
 	out := os.Stdout
 	if *outPath != "" {
@@ -168,12 +170,12 @@ func main() {
 
 	// Non-zero exit when the tar total risk exceeds the threshold, so the
 	// workflow step can gate.
-	if report.TotalRisk > HighRiskThreshold {
+	if report.TotalRisk > *threshold {
 		os.Exit(1)
 	}
 }
 
-func buildReport(res *scan.Result, approvedSet map[string]struct{}, src approved.Source) Report {
+func buildReport(res *scan.Result, approvedSet map[string]struct{}, src approved.Source, threshold int) Report {
 	var overlap, novel []string
 	for id := range res.EgressIDs {
 		if _, ok := approvedSet[id]; ok {
@@ -231,7 +233,7 @@ func buildReport(res *scan.Result, approvedSet map[string]struct{}, src approved
 		if fr.Risk > maxFile {
 			maxFile = fr.Risk
 		}
-		if fr.Risk > HighRiskThreshold {
+		if fr.Risk > threshold {
 			highRisk = append(highRisk, fr)
 		}
 	}
@@ -243,7 +245,7 @@ func buildReport(res *scan.Result, approvedSet map[string]struct{}, src approved
 	totalRisk := maxInt(maxFile, assessment.Score)
 
 	return Report{
-		Recommendation: recommendation(totalRisk, highRisk),
+		Recommendation: recommendation(totalRisk, highRisk, threshold),
 		TotalRisk:      totalRisk,
 		RiskScore:      assessment.Score,
 		RiskLevel:      assessment.Level,
@@ -346,9 +348,9 @@ func ownerFile(path string) string {
 }
 
 // recommendation names the highest-risk files (those over the threshold).
-func recommendation(totalRisk int, high []FileRisk) string {
+func recommendation(totalRisk int, high []FileRisk, threshold int) string {
 	if len(high) == 0 {
-		return fmt.Sprintf("No files exceed the risk threshold (%d/100); tar total risk %d/100. Low risk.", HighRiskThreshold, totalRisk)
+		return fmt.Sprintf("No files exceed the risk threshold (%d/100); tar total risk %d/100. Low risk.", threshold, totalRisk)
 	}
 	const maxList = 5
 	parts := make([]string, 0, maxList)

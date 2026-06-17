@@ -62,11 +62,14 @@ Flags:
 - `--ib-pattern` — override the IB-ID regex.
 - `--max-bytes` — per-file size cap (default 100 MiB); larger files are flagged.
 - `--max-depth` — nested-archive recursion guard (default 12).
+- `--high-risk-threshold` — per-file/tar risk (0–100) above which a file is
+  flagged high-risk and the exit code is non-zero (default 30). Operator-tunable;
+  no recompile needed.
 - `--ocr` — OCR images (needs a binary built with `-tags ocr`).
 - `--out` — write JSON here (default stdout); `--pretty` toggles indentation.
 
-**Exit codes:** `0` clean · `1` tar `total_risk` exceeds the threshold (30) · `2`
-error. The workflow step can gate on non-zero.
+**Exit codes:** `0` clean · `1` tar `total_risk` exceeds the threshold (default
+30, `--high-risk-threshold`) · `2` error. The workflow step can gate on non-zero.
 
 ## Risk scoring
 
@@ -80,8 +83,8 @@ Every file gets a **0–100 `risk`** = the **max** of its applicable sub-scores:
   whitespace), ×100. PDF-embedded images roll up to the PDF.
 
 The tar **`total_risk`** is the worst file's risk, floored at the tar-wide IB/PHI
-score. `high_risk_files` lists every file over the threshold (30), and the
-`recommendation` names them.
+score. `high_risk_files` lists every file over the threshold (default 30, set
+with `--high-risk-threshold`), and the `recommendation` names them.
 
 ## Output
 
