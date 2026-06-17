@@ -92,10 +92,12 @@ func (s *Scanner) scanSQLiteTable(db *sql.DB, dbName, table string, res *Result)
 	for i := range vals {
 		ptrs[i] = &vals[i]
 	}
+	rowCount := 0
 	for rows.Next() {
 		if err := rows.Scan(ptrs...); err != nil {
 			return err
 		}
+		rowCount++
 		for _, v := range vals {
 			var text string
 			switch tv := v.(type) {
@@ -112,5 +114,9 @@ func (s *Scanner) scanSQLiteTable(db *sql.DB, dbName, table string, res *Result)
 			res.PHIMatches += s.cfg.Matcher.PHICount(text)
 		}
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	res.addGrid(dbName, "sqlite", rowCount, len(cols))
+	return nil
 }

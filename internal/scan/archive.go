@@ -57,36 +57,6 @@ func decompressExt(ext string, data []byte, max int64) ([]byte, bool) {
 	return nil, false
 }
 
-// decompressByMagic strips a known outer compression layer based on leading
-// magic bytes, returning the original data unchanged when none is recognised.
-// Used for formats (RDS/RData) where compression is implicit, not in the name.
-func decompressByMagic(data []byte, max int64) []byte {
-	switch {
-	case len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b: // gzip
-		if dec, ok := gunzip(data, max); ok {
-			return dec
-		}
-	case len(data) >= 3 && string(data[:3]) == "BZh": // bzip2
-		if dec, ok := boundedReadAll(bzip2.NewReader(bytes.NewReader(data)), max); ok {
-			return dec
-		}
-	case len(data) >= 6 && bytes.Equal(data[:6], []byte{0xfd, '7', 'z', 'X', 'Z', 0x00}): // xz
-		if r, err := xz.NewReader(bytes.NewReader(data)); err == nil {
-			if dec, ok := boundedReadAll(r, max); ok {
-				return dec
-			}
-		}
-	case len(data) >= 4 && bytes.Equal(data[:4], []byte{0x28, 0xb5, 0x2f, 0xfd}): // zstd
-		if r, err := zstd.NewReader(bytes.NewReader(data)); err == nil {
-			defer r.Close()
-			if dec, ok := boundedReadAll(r, max); ok {
-				return dec
-			}
-		}
-	}
-	return data
-}
-
 // recurseZip treats a .zip as a container and dispatches every member through
 // the normal pipeline so nested PDFs, CSVs, etc. are all scanned.
 func (s *Scanner) recurseZip(name string, data []byte, depth int, res *Result) {

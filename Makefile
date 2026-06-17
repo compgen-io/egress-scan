@@ -19,12 +19,12 @@ all: build-linux
 
 ## build: local dev binary for the host platform (no OCR)
 build:
-	$(GO) build -trimpath -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY) .
+	$(GO) build -trimpath -buildvcs=false -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY) .
 
 ## build-linux: static linux/amd64 binary, no OCR (the primary release artifact)
 build-linux:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-		$(GO) build -trimpath -ldflags="$(LDFLAGS)" -o $(LINUX_BIN) .
+		$(GO) build -trimpath -buildvcs=false -ldflags="$(LDFLAGS)" -o $(LINUX_BIN) .
 	@echo "built $(LINUX_BIN)"
 
 ## build-ocr: cgo binary WITH OCR. cgo cannot cross-compile without a cross
@@ -32,7 +32,7 @@ build-linux:
 ## (the CI runner or the devcontainer on an amd64 host) to get a real amd64
 ## binary. The output name reflects the intended release target.
 build-ocr:
-	CGO_ENABLED=1 $(GO) build -tags ocr -trimpath -o $(OCR_BIN) .
+	CGO_ENABLED=1 $(GO) build -tags ocr -trimpath -buildvcs=false -o $(OCR_BIN) .
 	@echo "built $(OCR_BIN)"
 
 ## docker-ocr: build the deployable linux/amd64 OCR image (Tesseract at runtime).

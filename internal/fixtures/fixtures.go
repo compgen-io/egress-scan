@@ -14,12 +14,16 @@ import (
 	"bytes"
 	"compress/gzip"
 	"database/sql"
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/png"
+	"io"
 	"os"
+	"strings"
 
+	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/goregular"
 	"golang.org/x/image/font/opentype"
@@ -50,6 +54,15 @@ var NonOCRExpected = []string{
 	IDApproved, IDCSV, IDText, IDZip, IDGz, IDSQLite, IDDocx, IDRDS, IDRawH5,
 }
 
+// Grid/image fixture expectations.
+const (
+	DumpRows = 30 // data/dump.csv data rows
+	DumpCols = 8
+	// DumpArea is the grid area of the dump CSV (>= RiskFullArea, so area-risk 1.0).
+	DumpArea       = (DumpRows + 1) * DumpCols // +1 header row
+	NoiseImageName = "noise.png"               // should be flagged as data-as-pixels
+)
+
 // BuildTar returns the sample tar bytes. The PNG (OCR-only ID) is always
 // included; whether its ID is found depends on the scan's OCR setting.
 func BuildTar() ([]byte, error) {
@@ -77,6 +90,14 @@ func BuildTar() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	noiseBytes, err := RenderNoisePNG(300, 300)
+	if err != nil {
+		return nil, err
+	}
+	pdfBytes, err := makePDF(noiseBytes, pngBytes)
+	if err != nil {
+		return nil, err
+	}
 
 	files := []struct {
 		name string
@@ -84,6 +105,7 @@ func BuildTar() ([]byte, error) {
 	}{
 		{"data/sample.csv", []byte("subject,note\np1," + IDApproved + "\np2," + IDCSV + " enrolled\n")},
 		{"data/notes/readme.txt", []byte("see patient " + IDText + " for details\n")},
+		{"data/dump.csv", makeDumpCSV()}, // wide raw table -> data-volume risk
 		{"bundle.zip", zipBytes},
 		{"data/col.csv.gz", gzBytes},
 		{"data/model.rds", rdsBytes},
@@ -91,6 +113,8 @@ func BuildTar() ([]byte, error) {
 		{"data/cohort.sqlite", sqliteBytes},
 		{"data/matrix.h5", append([]byte("\x89HDF\r\n\x1a\n....."), []byte(IDRawH5+".....")...)},
 		{"scans/form.png", pngBytes},
+		{"scans/" + NoiseImageName, noiseBytes}, // data-as-pixels -> flagged
+		{"report.pdf", pdfBytes},                // embeds the noisy + text images
 	}
 
 	var buf bytes.Buffer
@@ -187,6 +211,62 @@ func makeSQLite() ([]byte, error) {
 	}
 	db.Close()
 	return os.ReadFile(path)
+}
+
+// makeDumpCSV builds a wide raw data table (header + DumpRows x DumpCols) with
+// no IB-IDs — it exercises the data-volume dimension independently of IDs.
+func makeDumpCSV() []byte {
+	var sb strings.Builder
+	for c := 0; c < DumpCols; c++ {
+		if c > 0 {
+			sb.WriteByte(',')
+		}
+		fmt.Fprintf(&sb, "col%d", c)
+	}
+	sb.WriteByte('\n')
+	for r := 0; r < DumpRows; r++ {
+		for c := 0; c < DumpCols; c++ {
+			if c > 0 {
+				sb.WriteByte(',')
+			}
+			fmt.Fprintf(&sb, "%d", r*DumpCols+c)
+		}
+		sb.WriteByte('\n')
+	}
+	return []byte(sb.String())
+}
+
+// makePDF builds a PDF embedding the given images (no temp files), exercising
+// the PDF-embedded-image extraction path.
+func makePDF(images ...[]byte) ([]byte, error) {
+	readers := make([]io.Reader, len(images))
+	for i, img := range images {
+		readers[i] = bytes.NewReader(img)
+	}
+	var buf bytes.Buffer
+	if err := api.ImportImages(nil, &buf, readers, nil, nil); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// RenderNoisePNG produces a deterministic high-entropy image standing in for
+// data smuggled out as pixels.
+func RenderNoisePNG(w, h int) ([]byte, error) {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	var s uint32 = 0x9e3779b9
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			s = s*1664525 + 1013904223
+			v := uint8(s >> 24)
+			img.Set(x, y, color.RGBA{v, v, v, 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 // RenderPNG renders text as a clean, antialiased black-on-white PNG that

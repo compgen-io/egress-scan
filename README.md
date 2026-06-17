@@ -9,6 +9,15 @@ The IB-ID pattern (`\bIB[_-]?\d+\b`), normalisation, PHI patterns, and scoring
 model mirror the existing Python worker (`worker.py`, `risk_scoring.py`) so the
 output drops into the same review workflow.
 
+It checks three independent dimensions:
+
+1. **IB-ID leakage** — IDs found in the tar vs the approved-dataset set (novel vs overlap).
+2. **Data volume** — the total grid area (rows×cols) across all tables/sheets/
+   matrices/data-frames. Large area suggests a raw data dump (or a re-encoding of
+   the input CSVs) rather than the aggregate results approved for release.
+3. **Image noise** — whether images (and PDF-embedded images) are ordered plots
+   or near-random pixels, which would be data smuggled out as an image.
+
 ## What it scans
 
 | Input | How |
@@ -18,11 +27,14 @@ output drops into the same review workflow.
 | `.gz` `.bz2` `.xz` `.zst` wrappers | transparently decompressed, then scanned |
 | `.csv` `.tsv` `.txt` `.json` `.ipynb` `.svg` `.html` `.xml` code/config | UTF-8 decode + regex |
 | `.xlsx` `.xlsm` `.docx` `.pptx` `.ods` `.odt` `.odp` | open as zip, regex the content XML parts |
-| `.sqlite` `.db` `.sqlite3` | structured read of every TEXT/BLOB cell + column names |
-| `.parquet` | structured read of string columns + column names |
-| `.pdf` | text-layer extraction (scanned/image PDFs flagged for review) |
-| `.rds` `.RData` | outer compression stripped, then string scan (R stores strings inline) |
-| images (`.png` `.jpg` `.tiff` …) | OCR — **only** with `--ocr` on an OCR build |
+| `.sqlite` `.db` `.sqlite3` | structured read of every TEXT/BLOB cell + column names; rows×cols area |
+| `.parquet` | structured read of string columns + column names; rows×cols area from metadata |
+| `.csv` `.tsv` `.tab` | regex scan **+** rows×cols area |
+| `.xlsx` `.xlsm` | regex scan + per-sheet area from the `<dimension>` range |
+| `.npy` `.npz` | array shape (area) from the NumPy header; raw ID scan |
+| `.rds` `.RData` | string scan + data-frame/matrix dimensions via a partial R deserialiser |
+| `.pdf` | text-layer extraction **+** embedded-image noise analysis (pdfcpu) |
+| images (`.png` `.jpg` `.tiff` …) | noise/randomness analysis; **+** OCR with `--ocr` on an OCR build |
 | any other binary | raw-bytes fallback finds literal ASCII IDs |
 | `.h5` `.mat` `.rds`-less `.npy` `.pkl` `.xls` `.doc` `.duckdb` `.7z` `.rar` | flagged **unscanned** for manual review (plus a raw pass) |
 
@@ -53,24 +65,36 @@ Flags:
 - `--ocr` — OCR images (needs a binary built with `-tags ocr`).
 - `--out` — write JSON here (default stdout); `--pretty` toggles indentation.
 
-**Exit codes:** `0` no novel IB-IDs · `1` novel IB-IDs found · `2` error. The
-workflow step can gate on a non-zero exit.
+**Exit codes:** `0` clean · `1` a definite concern (novel IB-IDs, a flagged image,
+or maximum data-volume risk) · `2` error. The workflow step can gate on non-zero.
+
+## Data-volume & image-noise scoring
+
+- **Data volume** — every grid's area (rows×cols) is summed; the 0–1 `area_risk`
+  is linear: `min(1, total_area / 200)` (area 100 → 0.5, ≥200 → 1.0).
+- **Image noise** — each image gets a 0–1 `noise` score from its compressibility
+  (deflate ratio), grayscale entropy, and whitespace fraction. Plots score low
+  (compressible, lots of white); data-as-pixels scores high (incompressible,
+  high entropy). Images at/above the threshold are `flagged`.
 
 ## Output
 
 ```json
 {
-  "recommendation": "Check this file for potential IDs — 7 novel IB-ID(s) ...",
+  "recommendation": "Check this file before release — 7 novel IB-ID(s) not in approved datasets; large data volume (total grid area 248, area-risk 1.00) ...; 1 image(s) look like data encoded as pixels. Manual review required.",
   "risk_score": 71,
   "risk_level": "HIGH",
-  "summary": "...",
-  "reasons": ["..."],
   "ib_id_scan": { "approved_source": "ids_file", "egress_ib_id_count": 8,
                   "overlap_ib_id_count": 1, "novel_ib_id_count": 7,
                   "novel_ib_ids_sample": ["IB-4321"], "overlap_ib_ids_sample": ["IB-1234"] },
+  "data_volume": { "total_area": 248, "area_risk": 1.0,
+                   "grids": [{ "path": "data/dump.csv", "format": "csv", "rows": 31, "cols": 8, "area": 248 }] },
+  "image_analysis": { "flagged_count": 1,
+                      "images": [{ "path": "scans/x.png", "source": "file", "noise": 0.96,
+                                   "compression_ratio": 1.0, "entropy": 7.99, "whitespace": 0.08, "flagged": true }] },
   "findings":  [{ "path": "data/cohort.sqlite", "id": "IB-2099", "format": "sqlite", "via": "structured" }],
   "unscanned": [{ "path": "data/matrix.h5", "format": "h5", "reason": "unsupported binary format; manual review required" }],
-  "scan_stats": { "entries": 8, "scanned": 7, "skipped_too_large": 0, "errors": 0 }
+  "scan_stats": { "entries": 11, "scanned": 10, "skipped_too_large": 0, "errors": 0 }
 }
 ```
 

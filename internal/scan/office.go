@@ -4,6 +4,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"strings"
+
+	"github.com/compgen-io/egress-scan/internal/grid"
 )
 
 // scanOffice handles OOXML (.xlsx/.docx/.pptx) and OpenDocument (.ods/.odt/.odp).
@@ -21,6 +23,7 @@ func (s *Scanner) scanOffice(name string, data []byte, ext string, res *Result) 
 	}
 
 	scannedAny := false
+	isXlsx := ext == ".xlsx" || ext == ".xlsm"
 	for _, f := range zr.File {
 		if f.FileInfo().IsDir() || !isOfficeTextPart(f.Name) {
 			continue
@@ -38,6 +41,13 @@ func (s *Scanner) scanOffice(name string, data []byte, ext string, res *Result) 
 		}
 		res.PHIMatches += s.cfg.Matcher.PHICount(text)
 		scannedAny = true
+
+		// Record each worksheet (xl/worksheets/sheetN.xml) as its own grid.
+		if isXlsx && isWorksheetPart(f.Name) {
+			if r, c := grid.XlsxSheetArea(buf); r > 0 && c > 0 {
+				res.addGrid(name, ext[1:], r, c)
+			}
+		}
 	}
 
 	if scannedAny {
@@ -67,4 +77,10 @@ func isOfficeTextPart(n string) bool {
 		return true
 	}
 	return false
+}
+
+// isWorksheetPart matches xlsx worksheet XML parts (xl/worksheets/sheet1.xml).
+func isWorksheetPart(n string) bool {
+	n = strings.ToLower(n)
+	return strings.HasPrefix(n, "xl/worksheets/") && strings.HasSuffix(n, ".xml")
 }

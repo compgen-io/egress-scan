@@ -19,12 +19,15 @@ func (s *Scanner) scanParquet(name string, data []byte, res *Result) {
 	}
 
 	// Column names can themselves be IB-IDs.
-	for _, col := range f.Schema().Columns() {
+	cols := f.Schema().Columns()
+	for _, col := range cols {
 		colName := strings.Join(col, ".")
 		for id := range s.cfg.Matcher.IBIDs(colName) {
 			res.record(name, id, "parquet", "structured")
 		}
 	}
+	// Grid area from cheap file metadata (no full scan needed).
+	res.addGrid(name, "parquet", int(f.NumRows()), len(cols))
 
 	buf := make([]parquet.Value, 1024)
 	for _, rg := range f.RowGroups() {

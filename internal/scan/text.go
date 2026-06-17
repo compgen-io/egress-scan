@@ -4,6 +4,8 @@ import (
 	"path"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/compgen-io/egress-scan/internal/rdata"
 )
 
 // scanText decodes bytes as UTF-8 (lossy) and regex-scans for IB-IDs and PHI.
@@ -29,22 +31,29 @@ func (s *Scanner) scanRaw(name string, data []byte, format string, res *Result) 
 // scanRDS handles .rds/.RData. R stores every CHARSXP string inline as raw bytes;
 // the only encoding is the outer gzip/bzip2/xz wrapper. Decompressing and raw-
 // scanning therefore catches IDs in every string variable, factor level, and
-// name/key without needing a full (and fragile) R deserialiser. Numeric data is
-// stored as binary doubles and cannot hold an "IB"-prefixed ID.
+// name/key. It also recovers grid areas (data frames / matrices) via the partial
+// R deserialiser in the rdata package.
 func (s *Scanner) scanRDS(name string, data []byte, res *Result) {
-	decoded := decompressByMagic(data, s.cfg.MaxBytes)
+	decoded, _ := rdata.Decode(data, s.cfg.MaxBytes)
 	s.scanRaw(name, decoded, "rds", res)
+
+	if grids, err := rdata.Grids(data, s.cfg.MaxBytes); err == nil {
+		for _, g := range grids {
+			res.addGrid(name, "rds", g.Rows, g.Cols)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
 // Extension classification
 // ---------------------------------------------------------------------------
 
+// Note: .csv/.tsv/.tab are handled by scanDelimited (text scan + area), not here.
 var textExts = map[string]struct{}{
-	".csv": {}, ".tsv": {}, ".txt": {}, ".json": {}, ".ipynb": {}, ".jsonl": {},
+	".txt": {}, ".json": {}, ".ipynb": {}, ".jsonl": {},
 	".html": {}, ".htm": {}, ".xml": {}, ".svg": {}, ".md": {}, ".rst": {},
 	".yaml": {}, ".yml": {}, ".toml": {}, ".ini": {}, ".cfg": {}, ".log": {},
-	".tex": {}, ".sql": {}, ".tab": {}, ".rtf": {},
+	".tex": {}, ".sql": {}, ".rtf": {},
 	".py": {}, ".r": {}, ".rmd": {}, ".sh": {}, ".pl": {}, ".js": {}, ".do": {},
 }
 
@@ -59,8 +68,9 @@ var imageExts = map[string]struct{}{
 }
 
 // Heavy/opaque binaries we deliberately do not parse; flagged for manual review.
+// (.npy/.npz are handled for area + ID scanning, so they're not here.)
 var unsupportedBinaryExts = map[string]struct{}{
-	".h5": {}, ".hdf5": {}, ".mat": {}, ".npy": {}, ".npz": {}, ".pkl": {},
+	".h5": {}, ".hdf5": {}, ".mat": {}, ".pkl": {},
 	".pickle": {}, ".xls": {}, ".doc": {}, ".ppt": {}, ".duckdb": {},
 	".7z": {}, ".rar": {}, ".feather": {}, ".sav": {}, ".dta": {},
 }

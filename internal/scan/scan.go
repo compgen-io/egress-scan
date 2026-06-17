@@ -30,6 +30,30 @@ type Unscanned struct {
 	Reason string `json:"reason"`
 }
 
+// GridInfo is one rectangular data object (table/sheet/matrix/data.frame) and
+// its area, used to flag bulk-data dumps vs aggregate results.
+type GridInfo struct {
+	Path   string `json:"path"`
+	Format string `json:"format"`
+	Rows   int    `json:"rows"`
+	Cols   int    `json:"cols"`
+	Area   int    `json:"area"`
+}
+
+// ImageInfo is the noise analysis of one image (standalone or PDF-embedded).
+type ImageInfo struct {
+	Path       string  `json:"path"`
+	Format     string  `json:"format"`
+	Source     string  `json:"source"` // "file" or "pdf"
+	Width      int     `json:"width"`
+	Height     int     `json:"height"`
+	Noise      float64 `json:"noise"`
+	Entropy    float64 `json:"entropy"`
+	Whitespace float64 `json:"whitespace"`
+	CompRatio  float64 `json:"compression_ratio"`
+	Flagged    bool    `json:"flagged"`
+}
+
 // Stats are coarse counters for the run.
 type Stats struct {
 	Entries         int `json:"entries"`
@@ -44,9 +68,22 @@ type Result struct {
 	PHIMatches int
 	Findings   []Finding
 	Unscanned  []Unscanned
+	Grids      []GridInfo
+	TotalArea  int
+	Images     []ImageInfo
 	Stats      Stats
 
 	seenIDLoc map[string]struct{} // dedupe findings by path|id
+}
+
+// addGrid records a rectangular data object and adds to the total area.
+func (r *Result) addGrid(path, format string, rows, cols int) {
+	if rows <= 0 || cols <= 0 {
+		return
+	}
+	area := rows * cols
+	r.Grids = append(r.Grids, GridInfo{Path: path, Format: format, Rows: rows, Cols: cols, Area: area})
+	r.TotalArea += area
 }
 
 // Config controls a Scanner.
@@ -182,12 +219,18 @@ func (s *Scanner) dispatch(name string, data []byte, depth int, res *Result) {
 		}
 
 	// --- structured parsers ----------------------------------------------
+	case ext == ".csv" || ext == ".tsv" || ext == ".tab":
+		s.scanDelimited(name, data, ext, res)
 	case isOfficeExt(ext):
 		s.scanOffice(name, data, ext, res)
 	case ext == ".sqlite" || ext == ".sqlite3" || ext == ".db":
 		s.scanSQLite(name, data, res)
 	case ext == ".parquet":
 		s.scanParquet(name, data, res)
+	case ext == ".npy":
+		s.scanNpy(name, data, res)
+	case ext == ".npz":
+		s.recurseZip(name, data, depth, res) // zip of .npy members
 	case ext == ".pdf":
 		s.scanPDF(name, data, res)
 	case ext == ".rds" || ext == ".rdata":

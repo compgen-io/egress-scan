@@ -11,14 +11,17 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"github.com/compgen-io/egress-scan/internal/approved"
+	"github.com/compgen-io/egress-scan/internal/grid"
 	"github.com/compgen-io/egress-scan/internal/idmatch"
 	"github.com/compgen-io/egress-scan/internal/risk"
 	"github.com/compgen-io/egress-scan/internal/scan"
@@ -32,9 +35,26 @@ type Report struct {
 	Summary        string           `json:"summary"`
 	Reasons        []string         `json:"reasons"`
 	IBIDScan       IBIDScan         `json:"ib_id_scan"`
+	DataVolume     DataVolume       `json:"data_volume"`
+	ImageAnalysis  ImageAnalysis    `json:"image_analysis"`
 	Findings       []scan.Finding   `json:"findings"`
 	Unscanned      []scan.Unscanned `json:"unscanned"`
 	ScanStats      scan.Stats       `json:"scan_stats"`
+}
+
+// DataVolume reports grid (table/matrix/data.frame) area and its 0-1 risk: a
+// large total area suggests a raw data dump rather than aggregate results.
+type DataVolume struct {
+	TotalArea int             `json:"total_area"`
+	AreaRisk  float64         `json:"area_risk"`
+	Grids     []scan.GridInfo `json:"grids"`
+}
+
+// ImageAnalysis reports per-image noise scores; flagged images look like data
+// encoded as pixels rather than ordinary plots.
+type ImageAnalysis struct {
+	FlaggedCount int              `json:"flagged_count"`
+	Images       []scan.ImageInfo `json:"images"`
 }
 
 // IBIDScan mirrors the ib_id_scan block produced by risk_scoring.py.
@@ -130,7 +150,10 @@ func main() {
 		fatal("writing report: %v", err)
 	}
 
-	if report.IBIDScan.NovelIBIDCount > 0 {
+	// Non-zero exit on a definite concern so the workflow step can gate.
+	if report.IBIDScan.NovelIBIDCount > 0 ||
+		report.ImageAnalysis.FlaggedCount > 0 ||
+		report.DataVolume.AreaRisk >= 1.0 {
 		os.Exit(1)
 	}
 }
@@ -163,13 +186,36 @@ func buildReport(res *scan.Result, approvedSet map[string]struct{}, src approved
 	if unscanned == nil {
 		unscanned = []scan.Unscanned{}
 	}
+	grids := res.Grids
+	if grids == nil {
+		grids = []scan.GridInfo{}
+	}
+	images := res.Images
+	if images == nil {
+		images = []scan.ImageInfo{}
+	}
+
+	areaRisk := grid.Risk(res.TotalArea)
+	flaggedImages := 0
+	for _, im := range res.Images {
+		if im.Flagged {
+			flaggedImages++
+		}
+	}
 
 	return Report{
-		Recommendation: recommendation(len(novel), len(overlap), len(res.EgressIDs), len(res.Unscanned)),
-		RiskScore:      assessment.Score,
-		RiskLevel:      assessment.Level,
-		Summary:        assessment.Summary,
-		Reasons:        assessment.Reasons,
+		Recommendation: recommendation(recSignals{
+			novel:         len(novel),
+			totalIDs:      len(res.EgressIDs),
+			unscanned:     len(res.Unscanned),
+			totalArea:     res.TotalArea,
+			areaRisk:      areaRisk,
+			flaggedImages: flaggedImages,
+		}),
+		RiskScore: assessment.Score,
+		RiskLevel: assessment.Level,
+		Summary:   assessment.Summary,
+		Reasons:   assessment.Reasons,
 		IBIDScan: IBIDScan{
 			ApprovedSource:     src.Kind,
 			ApprovedIBIDCount:  len(approvedSet),
@@ -179,25 +225,58 @@ func buildReport(res *scan.Result, approvedSet map[string]struct{}, src approved
 			NovelIBIDsSample:   sample(novel, 20),
 			OverlapIBIDsSample: sample(overlap, 20),
 		},
+		DataVolume: DataVolume{
+			TotalArea: res.TotalArea,
+			AreaRisk:  round2(areaRisk),
+			Grids:     grids,
+		},
+		ImageAnalysis: ImageAnalysis{
+			FlaggedCount: flaggedImages,
+			Images:       images,
+		},
 		Findings:  findings,
 		Unscanned: unscanned,
 		ScanStats: res.Stats,
 	}
 }
 
-// recommendation is the plain-text answer, tuned to what was found.
-func recommendation(novel, overlap, total, unscanned int) string {
-	switch {
-	case novel > 0:
-		return fmt.Sprintf("Check this file for potential IDs — %d novel IB-ID(s) not in approved datasets were found. Manual review required before release.", novel)
-	case total > 0:
-		return fmt.Sprintf("IB-IDs were found but all %d match approved datasets; review recommended before release.", total)
-	case unscanned > 0:
-		return fmt.Sprintf("No IB-IDs detected in scanned content, but %d file(s) could not be scanned — manual review recommended.", unscanned)
-	default:
-		return "No IB-IDs detected; low risk."
-	}
+// recSignals collects the cross-dimension signals that drive the recommendation.
+type recSignals struct {
+	novel         int
+	totalIDs      int
+	unscanned     int
+	totalArea     int
+	areaRisk      float64
+	flaggedImages int
 }
+
+// recommendation is the plain-text answer, combining the IB-ID, data-volume, and
+// image-noise dimensions.
+func recommendation(s recSignals) string {
+	var concerns []string
+	if s.novel > 0 {
+		concerns = append(concerns, fmt.Sprintf("%d novel IB-ID(s) not in approved datasets", s.novel))
+	}
+	if s.areaRisk >= 0.5 {
+		concerns = append(concerns, fmt.Sprintf("large data volume (total grid area %d, area-risk %.2f) — likely a data dump rather than aggregate results", s.totalArea, s.areaRisk))
+	}
+	if s.flaggedImages > 0 {
+		concerns = append(concerns, fmt.Sprintf("%d image(s) look like data encoded as pixels", s.flaggedImages))
+	}
+
+	if len(concerns) > 0 {
+		return "Check this file before release — " + strings.Join(concerns, "; ") + ". Manual review required."
+	}
+	if s.totalIDs > 0 {
+		return fmt.Sprintf("IB-IDs were found but all %d match approved datasets; review recommended before release.", s.totalIDs)
+	}
+	if s.unscanned > 0 {
+		return fmt.Sprintf("No IB-IDs detected in scanned content, but %d file(s) could not be scanned — manual review recommended.", s.unscanned)
+	}
+	return "No IB-IDs, oversized data grids, or noisy images detected; low risk."
+}
+
+func round2(f float64) float64 { return math.Round(f*100) / 100 }
 
 func sample(ids []string, n int) []string {
 	if len(ids) > n {
