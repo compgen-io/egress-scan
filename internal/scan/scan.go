@@ -30,14 +30,31 @@ type Unscanned struct {
 	Reason string `json:"reason"`
 }
 
-// FlaggedFile is a file flagged as high-risk by policy, without inspecting its
-// contents (e.g. a Python pickle: opaque, executable on load, no aggregate-
-// results use case). The reason is surfaced; the file is not scanned.
+// FlaggedFile is a file assigned risk by policy. Risk is the floor/fixed risk
+// (0-100) the file should carry regardless of its scanned content — e.g. a
+// Python pickle (100), exceeding the recursion guard (100), or an RDS/RData file
+// (50 floor). The reason is surfaced in the report.
 type FlaggedFile struct {
 	Path   string `json:"path"`
 	Format string `json:"format"`
 	Reason string `json:"reason"`
+	Risk   int    `json:"risk"`
 }
+
+// FileSize records the declared (uncompressed) size of a file in the artifact,
+// used for the file-size risk dimension. Recorded even when the file is too
+// large to read, so oversized files still score.
+type FileSize struct {
+	Path  string `json:"path"`
+	Bytes int64  `json:"bytes"`
+}
+
+// Policy risk levels assigned by FlaggedFile.
+const (
+	riskPickle    = 100 // opaque, executes on load
+	riskRecursion = 100 // exceeded the nested-archive guard (zip bomb / evasion)
+	riskRDSFloor  = 50  // R serialization: opaque-ish binary, minimum review risk
+)
 
 // GridInfo is one rectangular data object (table/sheet/matrix/data.frame) and
 // its area, used to flag bulk-data dumps vs aggregate results.
@@ -81,6 +98,7 @@ type Result struct {
 	Findings   []Finding
 	Unscanned  []Unscanned
 	Flagged    []FlaggedFile
+	FileSizes  []FileSize
 	Grids      []GridInfo
 	TotalArea  int
 	Images     []ImageInfo
@@ -181,6 +199,7 @@ func (s *Scanner) scanTarStream(r io.Reader, prefix string, res *Result) error {
 		}
 		name := joinLogical(prefix, hdr.Name)
 		res.Stats.Entries++
+		res.FileSizes = append(res.FileSizes, FileSize{Path: name, Bytes: hdr.Size})
 
 		if hdr.Size > s.cfg.MaxBytes {
 			res.Stats.SkippedTooLarge++
@@ -207,8 +226,9 @@ func (s *Scanner) scanTarStream(r io.Reader, prefix string, res *Result) error {
 // falling back to content sniffing and then a raw-bytes scan.
 func (s *Scanner) dispatch(name string, data []byte, depth int, res *Result) {
 	if depth > s.cfg.MaxDepth {
-		res.Unscanned = append(res.Unscanned, Unscanned{
-			Path: name, Format: formatFor(name), Reason: "archive nesting too deep",
+		res.Flagged = append(res.Flagged, FlaggedFile{
+			Path: name, Format: formatFor(name), Risk: riskRecursion,
+			Reason: "exceeded nested-archive recursion guard (possible zip bomb / evasion)",
 		})
 		return
 	}

@@ -35,6 +35,7 @@ func (s *Scanner) scanPickle(name string, res *Result) {
 	res.Flagged = append(res.Flagged, FlaggedFile{
 		Path:   name,
 		Format: formatFor(name),
+		Risk:   riskPickle,
 		Reason: "python pickle — opaque serialized object (executes code on load); no aggregate-results use case",
 	})
 }
@@ -45,6 +46,12 @@ func (s *Scanner) scanPickle(name string, res *Result) {
 // name/key. It also recovers grid areas (data frames / matrices) via the partial
 // R deserialiser in the rdata package.
 func (s *Scanner) scanRDS(name string, data []byte, res *Result) {
+	// R serialization is an opaque-ish binary; carry a minimum review risk.
+	res.Flagged = append(res.Flagged, FlaggedFile{
+		Path: name, Format: formatFor(name), Risk: riskRDSFloor,
+		Reason: "R data file (.rds/.RData) — opaque serialized objects; minimum review risk",
+	})
+
 	decoded, _ := rdata.Decode(data, s.cfg.MaxBytes)
 	s.scanRaw(name, decoded, "rds", res)
 

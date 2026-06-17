@@ -23,7 +23,7 @@ func TestBuildReportPerFileRisk(t *testing.T) {
 	}
 	approvedSet := map[string]struct{}{"IB-2": {}}
 
-	rep := buildReport(res, approvedSet, approved.Source{Kind: "ids_file", Count: 1}, DefaultHighRiskThreshold)
+	rep := buildReport(res, approvedSet, approved.Source{Kind: "ids_file", Count: 1}, DefaultHighRiskThreshold, 10*1024*1024)
 
 	byPath := map[string]FileRisk{}
 	for _, fr := range rep.FileRisks {
@@ -56,7 +56,7 @@ func TestBuildReportPerFileRisk(t *testing.T) {
 
 	// A higher threshold (80) drops the 35-risk file, keeping big.csv (100) and
 	// doc.pdf (90).
-	repHi := buildReport(res, approvedSet, approved.Source{Kind: "ids_file", Count: 1}, 80)
+	repHi := buildReport(res, approvedSet, approved.Source{Kind: "ids_file", Count: 1}, 80, 10*1024*1024)
 	if len(repHi.HighRiskFiles) != 2 {
 		t.Errorf("threshold 80: high-risk files = %d (%v), want 2", len(repHi.HighRiskFiles), repHi.HighRiskFiles)
 	}
@@ -66,10 +66,10 @@ func TestBuildReportPickleAutoFlag(t *testing.T) {
 	res := &scan.Result{
 		EgressIDs: map[string]struct{}{},
 		Flagged: []scan.FlaggedFile{
-			{Path: "m/model.pkl", Format: "pkl", Reason: "python pickle — opaque"},
+			{Path: "m/model.pkl", Format: "pkl", Risk: AutoFlagRisk, Reason: "python pickle — opaque"},
 		},
 	}
-	rep := buildReport(res, map[string]struct{}{}, approved.Source{Kind: "none"}, DefaultHighRiskThreshold)
+	rep := buildReport(res, map[string]struct{}{}, approved.Source{Kind: "none"}, DefaultHighRiskThreshold, 10*1024*1024)
 
 	if len(rep.FileRisks) != 1 || rep.FileRisks[0].Risk != AutoFlagRisk {
 		t.Fatalf("expected one file at risk %d; got %v", AutoFlagRisk, rep.FileRisks)
@@ -90,7 +90,7 @@ func TestBuildReportLowRisk(t *testing.T) {
 		EgressIDs: map[string]struct{}{"IB-2": {}},
 		Findings:  []scan.Finding{{Path: "a.csv", ID: "IB-2"}},
 	}
-	rep := buildReport(res, map[string]struct{}{"IB-2": {}}, approved.Source{Kind: "ids_file"}, DefaultHighRiskThreshold)
+	rep := buildReport(res, map[string]struct{}{"IB-2": {}}, approved.Source{Kind: "ids_file"}, DefaultHighRiskThreshold, 10*1024*1024)
 	if len(rep.HighRiskFiles) != 0 {
 		t.Errorf("expected no high-risk files for an all-approved tar; got %v", rep.HighRiskFiles)
 	}

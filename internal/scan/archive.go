@@ -71,6 +71,7 @@ func (s *Scanner) recurseZip(name string, data []byte, depth int, res *Result) {
 		}
 		member := joinLogical(name, f.Name)
 		res.Stats.Entries++
+		res.FileSizes = append(res.FileSizes, FileSize{Path: member, Bytes: int64(f.UncompressedSize64)})
 		if int64(f.UncompressedSize64) > s.cfg.MaxBytes {
 			res.Stats.SkippedTooLarge++
 			res.Unscanned = append(res.Unscanned, Unscanned{

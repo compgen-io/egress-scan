@@ -64,8 +64,9 @@ type FileRisk struct {
 	Risk           int    `json:"risk"`             // max of the sub-scores
 	IBRisk         int    `json:"ib_risk"`          // novel/overlap IB-IDs in the file
 	DataVolumeRisk int    `json:"data_volume_risk"` // grid area/rows
-	ImageRisk      int    `json:"image_risk"`       // worst image noise
-	Reason         string `json:"reason,omitempty"` // why a file is auto-flagged (e.g. pickle)
+	ImageRisk      int    `json:"image_risk"`       // worst image noise / metadata
+	SizeRisk       int    `json:"size_risk"`        // file size vs --max-file-size
+	Reason         string `json:"reason,omitempty"` // policy note (pickle, RDS floor, recursion guard)
 }
 
 // DataVolume reports grid (table/matrix/data.frame) area and its 0-1 risk: a
@@ -108,6 +109,7 @@ func main() {
 		maxBytes    = flag.Int64("max-bytes", 100*1024*1024, "per-file size cap; larger files are flagged not read")
 		maxDepth    = flag.Int("max-depth", 12, "maximum nested-archive recursion depth")
 		metaLimit   = flag.Int64("image-metadata-limit", 16*1024, "image embedded-metadata size (bytes) above which the image is flagged")
+		maxFileSize = flag.Int64("max-file-size", 10*1024*1024, "file size (bytes) that scores size-risk 100; risk scales linearly from 0 to this (default 10MB)")
 		threshold   = flag.Int("high-risk-threshold", DefaultHighRiskThreshold, "per-file/tar risk (0-100) above which a file is flagged high-risk and the exit code is non-zero")
 		ocr         = flag.Bool("ocr", false, "OCR images for text (requires a binary built with -tags ocr)")
 		outPath     = flag.String("out", "", "write JSON report here (default: stdout)")
@@ -170,7 +172,7 @@ func main() {
 		fatal("scanning %s: %v", *tarPath, err)
 	}
 
-	report := buildReport(res, approvedSet, src, *threshold)
+	report := buildReport(res, approvedSet, src, *threshold, *maxFileSize)
 
 	out := os.Stdout
 	if *outPath != "" {
@@ -196,7 +198,7 @@ func main() {
 	}
 }
 
-func buildReport(res *scan.Result, approvedSet map[string]struct{}, src approved.Source, threshold int) Report {
+func buildReport(res *scan.Result, approvedSet map[string]struct{}, src approved.Source, threshold int, sizeLimit int64) Report {
 	var overlap, novel []string
 	for id := range res.EgressIDs {
 		if _, ok := approvedSet[id]; ok {
@@ -249,8 +251,8 @@ func buildReport(res *scan.Result, approvedSet map[string]struct{}, src approved
 		}
 	}
 
-	// Per-file total risk = max(IB, data-volume, image) sub-scores.
-	fileRisks := buildFileRisks(res, approvedSet)
+	// Per-file total risk = max(IB, data-volume, image, size, policy) sub-scores.
+	fileRisks := buildFileRisks(res, approvedSet, sizeLimit)
 	var highRisk []FileRisk
 	maxFile := 0
 	for _, fr := range fileRisks {
@@ -303,12 +305,13 @@ func buildReport(res *scan.Result, approvedSet map[string]struct{}, src approved
 }
 
 // buildFileRisks aggregates per-file sub-risks and combines them with max().
-func buildFileRisks(res *scan.Result, approvedSet map[string]struct{}) []FileRisk {
+func buildFileRisks(res *scan.Result, approvedSet map[string]struct{}, sizeLimit int64) []FileRisk {
 	type agg struct {
 		ids, novel, overlap int
 		seen                map[string]bool
 		dataRisk, imgRisk   float64
-		flagged             bool
+		sizeBytes           int64
+		flagRisk            int
 		reason              string
 	}
 	files := map[string]*agg{}
@@ -351,8 +354,16 @@ func buildFileRisks(res *scan.Result, approvedSet map[string]struct{}) []FileRis
 	}
 	for _, f := range res.Flagged {
 		a := get(f.Path)
-		a.flagged = true
-		a.reason = f.Reason
+		if f.Risk >= a.flagRisk { // keep the reason of the highest-risk flag
+			a.flagRisk = f.Risk
+			a.reason = f.Reason
+		}
+	}
+	for _, fs := range res.FileSizes {
+		a := get(fs.Path)
+		if fs.Bytes > a.sizeBytes {
+			a.sizeBytes = fs.Bytes
+		}
 	}
 
 	out := make([]FileRisk, 0, len(files))
@@ -360,13 +371,10 @@ func buildFileRisks(res *scan.Result, approvedSet map[string]struct{}) []FileRis
 		ib := risk.Assess(risk.Inputs{TotalEgressIDs: a.ids, OverlapIDs: a.overlap, NovelIDs: a.novel}).Score
 		dv := int(math.Round(a.dataRisk * 100))
 		img := int(math.Round(a.imgRisk * 100))
-		flag := 0
-		if a.flagged {
-			flag = AutoFlagRisk
-		}
+		size := sizeRisk(a.sizeBytes, sizeLimit)
 		out = append(out, FileRisk{
-			Path: path, Risk: maxInt(ib, dv, img, flag),
-			IBRisk: ib, DataVolumeRisk: dv, ImageRisk: img,
+			Path: path, Risk: maxInt(ib, dv, img, size, a.flagRisk),
+			IBRisk: ib, DataVolumeRisk: dv, ImageRisk: img, SizeRisk: size,
 			Reason: a.reason,
 		})
 	}
@@ -403,6 +411,18 @@ func recommendation(totalRisk int, high []FileRisk, threshold int) string {
 	}
 	return fmt.Sprintf("Check this file before release — tar total risk %d/100. Highest-risk files: %s. Manual review required.",
 		totalRisk, strings.Join(parts, ", "))
+}
+
+// sizeRisk scales file size to 0-100, linearly from 0 to limit, capped at 100.
+func sizeRisk(bytes, limit int64) int {
+	if bytes <= 0 || limit <= 0 {
+		return 0
+	}
+	r := float64(bytes) / float64(limit) * 100
+	if r > 100 {
+		r = 100
+	}
+	return int(math.Round(r))
 }
 
 func round2(f float64) float64 { return math.Round(f*100) / 100 }

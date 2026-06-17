@@ -65,8 +65,12 @@ Flags:
   `$AWS_DEFAULT_REGION`). Required when `--approved-s3-bucket` is set; the tool
   errors early if no region can be resolved.
 - `--ib-pattern` — override the IB-ID regex.
-- `--max-bytes` — per-file size cap (default 100 MiB); larger files are flagged.
-- `--max-depth` — nested-archive recursion guard (default 12).
+- `--max-bytes` — per-file **read** cap (default 100 MiB); larger files aren't
+  read (but still scored for size).
+- `--max-file-size` — file **size** (bytes) that scores size-risk 100; risk
+  scales linearly 0→this (default 10 MB).
+- `--max-depth` — nested-archive recursion guard (default 12); a file that
+  exceeds it is auto-flagged at risk 100.
 - `--high-risk-threshold` — per-file/tar risk (0–100) above which a file is
   flagged high-risk and the exit code is non-zero (default 30). Operator-tunable;
   no recompile needed.
@@ -119,6 +123,11 @@ Every file gets a **0–100 `risk`** = the **max** of its applicable sub-scores:
   over `--image-metadata-limit`, default 16 KB → risk 60). PDF-embedded images
   roll up to the PDF. IB-IDs found in image metadata (EXIF/XMP/IPTC/PNG-text/
   JPEG-comment) feed the file's IB-ID score like any other finding.
+- **File size** — `min(100, size / --max-file-size × 100)` (default 10 MB → 100),
+  since egress outputs should be small aggregate results.
+- **Policy floors/flags** — Python pickles and files that blow the nested-archive
+  recursion guard are fixed at **100** (not scanned); `.rds`/`.RData` carry a
+  **50** minimum. These set a floor — content sub-scores can push higher.
 
 The tar **`total_risk`** is the worst file's risk, floored at the tar-wide IB/PHI
 score. `high_risk_files` lists every file over the threshold (default 30, set
