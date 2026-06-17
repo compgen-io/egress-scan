@@ -65,36 +65,49 @@ Flags:
 - `--ocr` — OCR images (needs a binary built with `-tags ocr`).
 - `--out` — write JSON here (default stdout); `--pretty` toggles indentation.
 
-**Exit codes:** `0` clean · `1` a definite concern (novel IB-IDs, a flagged image,
-or maximum data-volume risk) · `2` error. The workflow step can gate on non-zero.
+**Exit codes:** `0` clean · `1` tar `total_risk` exceeds the threshold (30) · `2`
+error. The workflow step can gate on non-zero.
 
-## Data-volume & image-noise scoring
+## Risk scoring
 
-- **Data volume** — every grid's area (rows×cols) is summed; the 0–1 `area_risk`
-  is linear: `min(1, total_area / 200)` (area 100 → 0.5, ≥200 → 1.0).
-- **Image noise** — each image gets a 0–1 `noise` score from its compressibility
-  (deflate ratio), grayscale entropy, and whitespace fraction. Plots score low
-  (compressible, lots of white); data-as-pixels scores high (incompressible,
-  high entropy). Images at/above the threshold are `flagged`.
+Every file gets a **0–100 `risk`** = the **max** of its applicable sub-scores:
+
+- **IB-ID** — novel vs approved IDs in that file (novel-ratio model from `risk_scoring.py`).
+- **Data volume** — its largest grid's 0–1 risk, `max(rows/100, area/5000)`, ×100.
+  Rows (≈ records/subjects) are the primary driver; area is a backstop for very
+  wide tables. Thresholds are tunable constants in `internal/grid`.
+- **Image noise** — its worst image's 0–1 noise (compressibility + entropy +
+  whitespace), ×100. PDF-embedded images roll up to the PDF.
+
+The tar **`total_risk`** is the worst file's risk, floored at the tar-wide IB/PHI
+score. `high_risk_files` lists every file over the threshold (30), and the
+`recommendation` names them.
 
 ## Output
 
 ```json
 {
-  "recommendation": "Check this file before release — 7 novel IB-ID(s) not in approved datasets; large data volume (total grid area 248, area-risk 1.00) ...; 1 image(s) look like data encoded as pixels. Manual review required.",
-  "risk_score": 71,
+  "recommendation": "Check this file before release — tar total risk 100/100. Highest-risk files: data/dump.csv (100), scans/x.png (96), data/sample.csv (35). Manual review required.",
+  "total_risk": 100,
+  "risk_score": 72,
   "risk_level": "HIGH",
+  "high_risk_files": [
+    { "path": "data/dump.csv", "risk": 100, "ib_risk": 0, "data_volume_risk": 100, "image_risk": 0 },
+    { "path": "scans/x.png",   "risk": 96,  "ib_risk": 0, "data_volume_risk": 0,   "image_risk": 96 },
+    { "path": "data/sample.csv", "risk": 35, "ib_risk": 35, "data_volume_risk": 3, "image_risk": 0 }
+  ],
+  "file_risks": [ "... every file with a signal, sorted desc ..." ],
   "ib_id_scan": { "approved_source": "ids_file", "egress_ib_id_count": 8,
                   "overlap_ib_id_count": 1, "novel_ib_id_count": 7,
                   "novel_ib_ids_sample": ["IB-4321"], "overlap_ib_ids_sample": ["IB-1234"] },
-  "data_volume": { "total_area": 248, "area_risk": 1.0,
-                   "grids": [{ "path": "data/dump.csv", "format": "csv", "rows": 31, "cols": 8, "area": 248 }] },
+  "data_volume": { "total_area": 1456, "area_risk": 1.0,
+                   "grids": [{ "path": "data/dump.csv", "format": "csv", "rows": 151, "cols": 8, "area": 1208 }] },
   "image_analysis": { "flagged_count": 1,
                       "images": [{ "path": "scans/x.png", "source": "file", "noise": 0.96,
                                    "compression_ratio": 1.0, "entropy": 7.99, "whitespace": 0.08, "flagged": true }] },
   "findings":  [{ "path": "data/cohort.sqlite", "id": "IB-2099", "format": "sqlite", "via": "structured" }],
   "unscanned": [{ "path": "data/matrix.h5", "format": "h5", "reason": "unsupported binary format; manual review required" }],
-  "scan_stats": { "entries": 11, "scanned": 10, "skipped_too_large": 0, "errors": 0 }
+  "scan_stats": { "entries": 12, "scanned": 11, "skipped_too_large": 0, "errors": 0 }
 }
 ```
 

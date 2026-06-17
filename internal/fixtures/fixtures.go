@@ -56,7 +56,7 @@ var NonOCRExpected = []string{
 
 // Grid/image fixture expectations.
 const (
-	DumpRows = 30 // data/dump.csv data rows
+	DumpRows = 150 // data/dump.csv data rows (>= RowsFullRisk -> full data-volume risk)
 	DumpCols = 8
 	// DumpArea is the grid area of the dump CSV (>= RiskFullArea, so area-risk 1.0).
 	DumpArea       = (DumpRows + 1) * DumpCols // +1 header row

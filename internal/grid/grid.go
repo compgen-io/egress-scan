@@ -14,16 +14,29 @@ import (
 	"strings"
 )
 
-// RiskFullArea is the area at or above which data-volume risk is 1.0.
-const RiskFullArea = 200
+// Data-volume risk thresholds (tunable). Rows (~ number of records/subjects) are
+// the primary re-identification driver; area is a backstop for very wide tables
+// (e.g. transposed feature matrices) that have few rows but huge cell counts.
+const (
+	RowsFullRisk = 100  // rows at/above which a grid is full (1.0) data-volume risk
+	AreaFullRisk = 5000 // cell count at/above which a grid is full risk
+)
 
-// Risk maps a total grid area to a 0-1 risk, linearly: area/200, capped at 1.
-// (area 100 -> 0.5, area >= 200 -> 1.0.)
-func Risk(totalArea int) float64 {
-	if totalArea <= 0 {
+// GridRisk returns the 0-1 data-volume risk for a single grid: the larger of the
+// row-driven and area-driven risks, capped at 1.
+//
+//	risk = min(1, max(rows/RowsFullRisk, area/AreaFullRisk))
+//
+// So a tall per-subject dump trips on rows, a wide blob trips on area, and a
+// small aggregate table (few rows, modest cells) stays low.
+func GridRisk(rows, cols int) float64 {
+	if rows <= 0 || cols <= 0 {
 		return 0
 	}
-	r := float64(totalArea) / float64(RiskFullArea)
+	r := float64(rows) / float64(RowsFullRisk)
+	if a := float64(rows*cols) / float64(AreaFullRisk); a > r {
+		r = a
+	}
 	if r > 1 {
 		return 1
 	}

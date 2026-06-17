@@ -27,19 +27,35 @@ import (
 	"github.com/compgen-io/egress-scan/internal/scan"
 )
 
+// HighRiskThreshold is the per-file total risk above which a file is called out.
+const HighRiskThreshold = 30
+
 // Report is the JSON document written to --out (or stdout).
 type Report struct {
 	Recommendation string           `json:"recommendation"`
-	RiskScore      int              `json:"risk_score"`
+	TotalRisk      int              `json:"total_risk"` // tar-level 0-100
+	RiskScore      int              `json:"risk_score"` // IB/PHI sub-score (tar)
 	RiskLevel      string           `json:"risk_level"`
 	Summary        string           `json:"summary"`
 	Reasons        []string         `json:"reasons"`
+	HighRiskFiles  []FileRisk       `json:"high_risk_files"` // risk > HighRiskThreshold
+	FileRisks      []FileRisk       `json:"file_risks"`      // every file with a signal
 	IBIDScan       IBIDScan         `json:"ib_id_scan"`
 	DataVolume     DataVolume       `json:"data_volume"`
 	ImageAnalysis  ImageAnalysis    `json:"image_analysis"`
 	Findings       []scan.Finding   `json:"findings"`
 	Unscanned      []scan.Unscanned `json:"unscanned"`
 	ScanStats      scan.Stats       `json:"scan_stats"`
+}
+
+// FileRisk is one file's 0-100 total risk and the per-dimension sub-scores it is
+// the max of.
+type FileRisk struct {
+	Path           string `json:"path"`
+	Risk           int    `json:"risk"`             // max of the sub-scores
+	IBRisk         int    `json:"ib_risk"`          // novel/overlap IB-IDs in the file
+	DataVolumeRisk int    `json:"data_volume_risk"` // grid area/rows
+	ImageRisk      int    `json:"image_risk"`       // worst image noise
 }
 
 // DataVolume reports grid (table/matrix/data.frame) area and its 0-1 risk: a
@@ -150,10 +166,9 @@ func main() {
 		fatal("writing report: %v", err)
 	}
 
-	// Non-zero exit on a definite concern so the workflow step can gate.
-	if report.IBIDScan.NovelIBIDCount > 0 ||
-		report.ImageAnalysis.FlaggedCount > 0 ||
-		report.DataVolume.AreaRisk >= 1.0 {
+	// Non-zero exit when the tar total risk exceeds the threshold, so the
+	// workflow step can gate.
+	if report.TotalRisk > HighRiskThreshold {
 		os.Exit(1)
 	}
 }
@@ -195,27 +210,47 @@ func buildReport(res *scan.Result, approvedSet map[string]struct{}, src approved
 		images = []scan.ImageInfo{}
 	}
 
-	areaRisk := grid.Risk(res.TotalArea)
 	flaggedImages := 0
 	for _, im := range res.Images {
 		if im.Flagged {
 			flaggedImages++
 		}
 	}
+	maxGridRisk := 0.0
+	for _, g := range grids {
+		if r := grid.GridRisk(g.Rows, g.Cols); r > maxGridRisk {
+			maxGridRisk = r
+		}
+	}
+
+	// Per-file total risk = max(IB, data-volume, image) sub-scores.
+	fileRisks := buildFileRisks(res, approvedSet)
+	var highRisk []FileRisk
+	maxFile := 0
+	for _, fr := range fileRisks {
+		if fr.Risk > maxFile {
+			maxFile = fr.Risk
+		}
+		if fr.Risk > HighRiskThreshold {
+			highRisk = append(highRisk, fr)
+		}
+	}
+	if highRisk == nil {
+		highRisk = []FileRisk{}
+	}
+	// Tar total = worst file, floored at the tar-wide IB/PHI score so a broad
+	// leak still registers even if no single file dominates.
+	totalRisk := maxInt(maxFile, assessment.Score)
 
 	return Report{
-		Recommendation: recommendation(recSignals{
-			novel:         len(novel),
-			totalIDs:      len(res.EgressIDs),
-			unscanned:     len(res.Unscanned),
-			totalArea:     res.TotalArea,
-			areaRisk:      areaRisk,
-			flaggedImages: flaggedImages,
-		}),
-		RiskScore: assessment.Score,
-		RiskLevel: assessment.Level,
-		Summary:   assessment.Summary,
-		Reasons:   assessment.Reasons,
+		Recommendation: recommendation(totalRisk, highRisk),
+		TotalRisk:      totalRisk,
+		RiskScore:      assessment.Score,
+		RiskLevel:      assessment.Level,
+		Summary:        assessment.Summary,
+		Reasons:        assessment.Reasons,
+		HighRiskFiles:  highRisk,
+		FileRisks:      fileRisks,
 		IBIDScan: IBIDScan{
 			ApprovedSource:     src.Kind,
 			ApprovedIBIDCount:  len(approvedSet),
@@ -227,7 +262,7 @@ func buildReport(res *scan.Result, approvedSet map[string]struct{}, src approved
 		},
 		DataVolume: DataVolume{
 			TotalArea: res.TotalArea,
-			AreaRisk:  round2(areaRisk),
+			AreaRisk:  round2(maxGridRisk),
 			Grids:     grids,
 		},
 		ImageAnalysis: ImageAnalysis{
@@ -240,43 +275,105 @@ func buildReport(res *scan.Result, approvedSet map[string]struct{}, src approved
 	}
 }
 
-// recSignals collects the cross-dimension signals that drive the recommendation.
-type recSignals struct {
-	novel         int
-	totalIDs      int
-	unscanned     int
-	totalArea     int
-	areaRisk      float64
-	flaggedImages int
+// buildFileRisks aggregates per-file sub-risks and combines them with max().
+func buildFileRisks(res *scan.Result, approvedSet map[string]struct{}) []FileRisk {
+	type agg struct {
+		ids, novel, overlap int
+		seen                map[string]bool
+		dataRisk, imgRisk   float64
+	}
+	files := map[string]*agg{}
+	get := func(p string) *agg {
+		a := files[p]
+		if a == nil {
+			a = &agg{seen: map[string]bool{}}
+			files[p] = a
+		}
+		return a
+	}
+
+	for _, f := range res.Findings {
+		a := get(f.Path)
+		if a.seen[f.ID] {
+			continue
+		}
+		a.seen[f.ID] = true
+		a.ids++
+		if _, ok := approvedSet[f.ID]; ok {
+			a.overlap++
+		} else {
+			a.novel++
+		}
+	}
+	for _, g := range res.Grids {
+		a := get(g.Path)
+		if r := grid.GridRisk(g.Rows, g.Cols); r > a.dataRisk {
+			a.dataRisk = r
+		}
+	}
+	for _, im := range res.Images {
+		a := get(ownerFile(im.Path)) // roll PDF-embedded images up to the PDF
+		if im.Noise > a.imgRisk {
+			a.imgRisk = im.Noise
+		}
+	}
+
+	out := make([]FileRisk, 0, len(files))
+	for path, a := range files {
+		ib := risk.Assess(risk.Inputs{TotalEgressIDs: a.ids, OverlapIDs: a.overlap, NovelIDs: a.novel}).Score
+		dv := int(math.Round(a.dataRisk * 100))
+		img := int(math.Round(a.imgRisk * 100))
+		out = append(out, FileRisk{
+			Path: path, Risk: maxInt(ib, dv, img),
+			IBRisk: ib, DataVolumeRisk: dv, ImageRisk: img,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Risk != out[j].Risk {
+			return out[i].Risk > out[j].Risk
+		}
+		return out[i].Path < out[j].Path
+	})
+	return out
 }
 
-// recommendation is the plain-text answer, combining the IB-ID, data-volume, and
-// image-noise dimensions.
-func recommendation(s recSignals) string {
-	var concerns []string
-	if s.novel > 0 {
-		concerns = append(concerns, fmt.Sprintf("%d novel IB-ID(s) not in approved datasets", s.novel))
+// ownerFile strips a "#imageN" suffix so PDF-embedded images roll up to their PDF.
+func ownerFile(path string) string {
+	if i := strings.Index(path, "#"); i >= 0 {
+		return path[:i]
 	}
-	if s.areaRisk >= 0.5 {
-		concerns = append(concerns, fmt.Sprintf("large data volume (total grid area %d, area-risk %.2f) — likely a data dump rather than aggregate results", s.totalArea, s.areaRisk))
-	}
-	if s.flaggedImages > 0 {
-		concerns = append(concerns, fmt.Sprintf("%d image(s) look like data encoded as pixels", s.flaggedImages))
-	}
+	return path
+}
 
-	if len(concerns) > 0 {
-		return "Check this file before release — " + strings.Join(concerns, "; ") + ". Manual review required."
+// recommendation names the highest-risk files (those over the threshold).
+func recommendation(totalRisk int, high []FileRisk) string {
+	if len(high) == 0 {
+		return fmt.Sprintf("No files exceed the risk threshold (%d/100); tar total risk %d/100. Low risk.", HighRiskThreshold, totalRisk)
 	}
-	if s.totalIDs > 0 {
-		return fmt.Sprintf("IB-IDs were found but all %d match approved datasets; review recommended before release.", s.totalIDs)
+	const maxList = 5
+	parts := make([]string, 0, maxList)
+	for i, fr := range high {
+		if i >= maxList {
+			parts = append(parts, fmt.Sprintf("and %d more", len(high)-maxList))
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s (%d)", fr.Path, fr.Risk))
 	}
-	if s.unscanned > 0 {
-		return fmt.Sprintf("No IB-IDs detected in scanned content, but %d file(s) could not be scanned — manual review recommended.", s.unscanned)
-	}
-	return "No IB-IDs, oversized data grids, or noisy images detected; low risk."
+	return fmt.Sprintf("Check this file before release — tar total risk %d/100. Highest-risk files: %s. Manual review required.",
+		totalRisk, strings.Join(parts, ", "))
 }
 
 func round2(f float64) float64 { return math.Round(f*100) / 100 }
+
+func maxInt(vals ...int) int {
+	m := 0
+	for _, v := range vals {
+		if v > m {
+			m = v
+		}
+	}
+	return m
+}
 
 func sample(ids []string, n int) []string {
 	if len(ids) > n {
