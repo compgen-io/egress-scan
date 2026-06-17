@@ -57,7 +57,8 @@ Flags:
   (Or set `APPROVED_IB_IDS=IB-1,IB-2` in the environment.)
 - `--approved-s3-bucket` / `--approved-s3-prefix` — scan an approved-datasets S3
   prefix for IDs (off unless a bucket is set; env: `APPROVED_DATASETS_BUCKET`,
-  `APPROVED_DATASETS_PREFIX`). Uses the default AWS credential chain. Object-count
+  `APPROVED_DATASETS_PREFIX`). Uses the default AWS credential chain — see
+  [Authenticating the S3 request](#authenticating-the-s3-request). Object-count
   and size caps come from `IB_SCAN_MAX_APPROVED_OBJECTS` / `IB_SCAN_MAX_OBJECT_BYTES`.
   Precedence: `--approved-ids` > `--approved-dir` > S3 > `APPROVED_IB_IDS`.
 - `--ib-pattern` — override the IB-ID regex.
@@ -71,6 +72,33 @@ Flags:
 
 **Exit codes:** `0` clean · `1` tar `total_risk` exceeds the threshold (default
 30, `--high-risk-threshold`) · `2` error. The workflow step can gate on non-zero.
+
+### Authenticating the S3 request
+
+When `--approved-s3-bucket` is set, the tool builds an S3 client with the **AWS
+SDK default credential chain** (`config.LoadDefaultConfig`) — no keys are passed
+in, hardcoded, or read from any tool-specific setting. The SDK resolves
+credentials in this order:
+
+1. Environment: `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (+ `AWS_SESSION_TOKEN`).
+2. Shared config/credentials files (`~/.aws/credentials`, `~/.aws/config`),
+   profile selected by `AWS_PROFILE`.
+3. **ECS/Fargate task role** — the container credentials endpoint
+   (`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`). This is the expected path in the
+   egress-worker deployment.
+4. EKS IRSA web-identity token, then the EC2 instance profile (IMDS).
+
+In the VPC, the clean setup is to give the worker's **ECS task role** read access
+to the approved-datasets prefix and set **no** credentials in the container:
+
+```json
+{ "Effect": "Allow",
+  "Action": ["s3:GetObject", "s3:ListBucket"],
+  "Resource": ["arn:aws:s3:::APPROVED_BUCKET", "arn:aws:s3:::APPROVED_BUCKET/PREFIX/*"] }
+```
+
+The region comes from `AWS_REGION` (or the shared config). No bucket configured →
+no AWS calls and no credentials needed at all.
 
 ## Risk scoring
 
