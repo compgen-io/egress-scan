@@ -240,7 +240,7 @@ Because releases are public, the worker image can pull a pinned binary at build
 time — no Go toolchain in the worker image:
 
 ```dockerfile
-ARG EGRESS_SCAN_VERSION=v0.0.1
+ARG EGRESS_SCAN_VERSION=v0.0.9
 RUN curl -fsSL -o /usr/local/bin/egress-scan \
       https://github.com/compgen-io/egress-scan/releases/download/${EGRESS_SCAN_VERSION}/egress-scan.linux_amd64 \
  && chmod +x /usr/local/bin/egress-scan
