@@ -110,6 +110,25 @@ func TestSampleTarDataVolumeAndImages(t *testing.T) {
 	if !pickleFlagged {
 		t.Errorf("expected the .pkl to be auto-flagged; flagged=%v", res.Flagged)
 	}
+
+	// The metadata PNG: the ID is found via metadata and the bloated chunk is flagged.
+	metaIDFound, metaFlagged := false, false
+	for _, f := range res.Findings {
+		if f.Via == "metadata" && f.ID == idmatch.Normalize(fixtures.IDMeta) {
+			metaIDFound = true
+		}
+	}
+	for _, im := range res.Images {
+		if strings.HasSuffix(im.Path, "meta.png") && im.MetadataFlagged {
+			metaFlagged = true
+		}
+	}
+	if !metaIDFound {
+		t.Errorf("expected %s found via image metadata; findings=%v", fixtures.IDMeta, res.Findings)
+	}
+	if !metaFlagged {
+		t.Errorf("expected meta.png flagged for excessive metadata; images=%v", res.Images)
+	}
 }
 
 func hasGrid(res *Result, pathSub string, rows, cols int) bool {

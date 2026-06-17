@@ -14,7 +14,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"database/sql"
+	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/draw"
@@ -43,6 +45,7 @@ const (
 	IDDocx     = "IB-1007" // docx content XML
 	IDRDS      = "IB-1008" // gzipped .rds (inline string)
 	IDRawH5    = "IB-1009" // literal ASCII in an unsupported .h5 binary
+	IDMeta     = "IB-9090" // embedded only in a PNG tEXt metadata chunk
 	IDOCROnly  = "IB-7788" // ONLY rendered into a PNG; OCR-only
 )
 
@@ -51,7 +54,7 @@ var ApprovedIDs = []string{IDApproved}
 
 // NonOCRExpected are the IDs a non-OCR scan must find.
 var NonOCRExpected = []string{
-	IDApproved, IDCSV, IDText, IDZip, IDGz, IDSQLite, IDDocx, IDRDS, IDRawH5,
+	IDApproved, IDCSV, IDText, IDZip, IDGz, IDSQLite, IDDocx, IDRDS, IDRawH5, IDMeta,
 }
 
 // Grid/image fixture expectations.
@@ -94,6 +97,10 @@ func BuildTar() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	metaBytes, err := metadataPNG()
+	if err != nil {
+		return nil, err
+	}
 	pdfBytes, err := makePDF(noiseBytes, pngBytes)
 	if err != nil {
 		return nil, err
@@ -115,6 +122,7 @@ func BuildTar() ([]byte, error) {
 		{"models/model.pkl", []byte("\x80\x04\x95\x10\x00\x00\x00\x00\x00\x00\x00pickled-object")}, // auto-flagged
 		{"scans/form.png", pngBytes},
 		{"scans/" + NoiseImageName, noiseBytes}, // data-as-pixels -> flagged
+		{"scans/meta.png", metaBytes},           // ID + bloat in a tEXt metadata chunk
 		{"report.pdf", pdfBytes},                // embeds the noisy + text images
 	}
 
@@ -249,6 +257,38 @@ func makePDF(images ...[]byte) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// metadataPNG builds a low-noise white PNG carrying an IB-ID and >16 KB of text
+// in a tEXt metadata chunk — exercising both metadata-ID scanning and the
+// excessive-metadata flag.
+func metadataPNG() ([]byte, error) {
+	img := image.NewRGBA(image.Rect(0, 0, 80, 60))
+	draw.Draw(img, img.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, err
+	}
+	text := "subject " + IDMeta + " " + strings.Repeat("notes ", 3500) // ~21 KB
+	return addPNGText(buf.Bytes(), "Description", text), nil
+}
+
+// addPNGText inserts a tEXt chunk (keyword\0text) just before the IEND chunk.
+func addPNGText(pngBytes []byte, keyword, text string) []byte {
+	data := append(append([]byte(keyword), 0), text...)
+	body := append([]byte("tEXt"), data...)
+	var lenb, crcb [4]byte
+	binary.BigEndian.PutUint32(lenb[:], uint32(len(data)))
+	binary.BigEndian.PutUint32(crcb[:], crc32.ChecksumIEEE(body))
+
+	cut := len(pngBytes) - 12 // IEND chunk is the trailing 12 bytes
+	out := make([]byte, 0, len(pngBytes)+len(body)+8)
+	out = append(out, pngBytes[:cut]...)
+	out = append(out, lenb[:]...)
+	out = append(out, body...)
+	out = append(out, crcb[:]...)
+	out = append(out, pngBytes[cut:]...)
+	return out
 }
 
 // RenderNoisePNG produces a deterministic high-entropy image standing in for

@@ -49,18 +49,21 @@ type GridInfo struct {
 	Area   int    `json:"area"`
 }
 
-// ImageInfo is the noise analysis of one image (standalone or PDF-embedded).
+// ImageInfo is the noise + metadata analysis of one image (standalone or
+// PDF-embedded).
 type ImageInfo struct {
-	Path       string  `json:"path"`
-	Format     string  `json:"format"`
-	Source     string  `json:"source"` // "file" or "pdf"
-	Width      int     `json:"width"`
-	Height     int     `json:"height"`
-	Noise      float64 `json:"noise"`
-	Entropy    float64 `json:"entropy"`
-	Whitespace float64 `json:"whitespace"`
-	CompRatio  float64 `json:"compression_ratio"`
-	Flagged    bool    `json:"flagged"`
+	Path            string  `json:"path"`
+	Format          string  `json:"format"`
+	Source          string  `json:"source"` // "file" or "pdf"
+	Width           int     `json:"width"`
+	Height          int     `json:"height"`
+	Noise           float64 `json:"noise"`
+	Entropy         float64 `json:"entropy"`
+	Whitespace      float64 `json:"whitespace"`
+	CompRatio       float64 `json:"compression_ratio"`
+	Flagged         bool    `json:"flagged"`          // noise crossed the threshold
+	MetadataBytes   int     `json:"metadata_bytes"`   // size of embedded text metadata
+	MetadataFlagged bool    `json:"metadata_flagged"` // metadata exceeded the limit
 }
 
 // Stats are coarse counters for the run.
@@ -98,10 +101,11 @@ func (r *Result) addGrid(path, format string, rows, cols int) {
 
 // Config controls a Scanner.
 type Config struct {
-	Matcher  *idmatch.Matcher
-	MaxBytes int64 // per-file size cap; larger files are flagged, not read
-	MaxDepth int   // archive recursion guard against zip bombs
-	OCR      bool  // attempt OCR on images (requires the ocr build tag)
+	Matcher       *idmatch.Matcher
+	MaxBytes      int64 // per-file size cap; larger files are flagged, not read
+	MaxDepth      int   // archive recursion guard against zip bombs
+	OCR           bool  // attempt OCR on images (requires the ocr build tag)
+	MetadataLimit int64 // image metadata bytes above which the image is flagged
 }
 
 // Scanner runs scans with a fixed configuration.
@@ -116,6 +120,9 @@ func New(cfg Config) *Scanner {
 	}
 	if cfg.MaxDepth <= 0 {
 		cfg.MaxDepth = 12
+	}
+	if cfg.MetadataLimit <= 0 {
+		cfg.MetadataLimit = 16 * 1024
 	}
 	return &Scanner{cfg: cfg}
 }

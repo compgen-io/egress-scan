@@ -35,6 +35,10 @@ const DefaultHighRiskThreshold = 30
 // pickles) regardless of content.
 const AutoFlagRisk = 100
 
+// ExcessiveMetadataRisk is the image sub-risk (0-100) contributed when an image
+// carries more embedded metadata than the limit (suspected data smuggling).
+const ExcessiveMetadataRisk = 60
+
 // Report is the JSON document written to --out (or stdout).
 type Report struct {
 	Recommendation string           `json:"recommendation"`
@@ -72,11 +76,13 @@ type DataVolume struct {
 	Grids     []scan.GridInfo `json:"grids"`
 }
 
-// ImageAnalysis reports per-image noise scores; flagged images look like data
-// encoded as pixels rather than ordinary plots.
+// ImageAnalysis reports per-image noise + metadata. Noise-flagged images look
+// like data encoded as pixels; metadata-flagged images carry excessive embedded
+// metadata.
 type ImageAnalysis struct {
-	FlaggedCount int              `json:"flagged_count"`
-	Images       []scan.ImageInfo `json:"images"`
+	FlaggedCount         int              `json:"flagged_count"`          // noise-flagged
+	MetadataFlaggedCount int              `json:"metadata_flagged_count"` // excessive metadata
+	Images               []scan.ImageInfo `json:"images"`
 }
 
 // IBIDScan mirrors the ib_id_scan block produced by risk_scoring.py.
@@ -101,6 +107,7 @@ func main() {
 		ibPattern   = flag.String("ib-pattern", idmatch.DefaultIBPattern, "IB-ID regex (overridable like IB_ID_PATTERN)")
 		maxBytes    = flag.Int64("max-bytes", 100*1024*1024, "per-file size cap; larger files are flagged not read")
 		maxDepth    = flag.Int("max-depth", 12, "maximum nested-archive recursion depth")
+		metaLimit   = flag.Int64("image-metadata-limit", 16*1024, "image embedded-metadata size (bytes) above which the image is flagged")
 		threshold   = flag.Int("high-risk-threshold", DefaultHighRiskThreshold, "per-file/tar risk (0-100) above which a file is flagged high-risk and the exit code is non-zero")
 		ocr         = flag.Bool("ocr", false, "OCR images for text (requires a binary built with -tags ocr)")
 		outPath     = flag.String("out", "", "write JSON report here (default: stdout)")
@@ -152,6 +159,7 @@ func main() {
 
 	scanner := scan.New(scan.Config{
 		Matcher: matcher, MaxBytes: *maxBytes, MaxDepth: *maxDepth, OCR: *ocr,
+		MetadataLimit: *metaLimit,
 	})
 	if scanner.OCRRequestedButUnavailable() {
 		fmt.Fprintln(os.Stderr, "warning: --ocr set but this binary was built without OCR support (-tags ocr); images will be flagged unscanned")
@@ -225,10 +233,13 @@ func buildReport(res *scan.Result, approvedSet map[string]struct{}, src approved
 		images = []scan.ImageInfo{}
 	}
 
-	flaggedImages := 0
+	flaggedImages, metaFlaggedImages := 0, 0
 	for _, im := range res.Images {
 		if im.Flagged {
 			flaggedImages++
+		}
+		if im.MetadataFlagged {
+			metaFlaggedImages++
 		}
 	}
 	maxGridRisk := 0.0
@@ -281,8 +292,9 @@ func buildReport(res *scan.Result, approvedSet map[string]struct{}, src approved
 			Grids:     grids,
 		},
 		ImageAnalysis: ImageAnalysis{
-			FlaggedCount: flaggedImages,
-			Images:       images,
+			FlaggedCount:         flaggedImages,
+			MetadataFlaggedCount: metaFlaggedImages,
+			Images:               images,
 		},
 		Findings:  findings,
 		Unscanned: unscanned,
@@ -332,6 +344,9 @@ func buildFileRisks(res *scan.Result, approvedSet map[string]struct{}) []FileRis
 		a := get(ownerFile(im.Path)) // roll PDF-embedded images up to the PDF
 		if im.Noise > a.imgRisk {
 			a.imgRisk = im.Noise
+		}
+		if im.MetadataFlagged && float64(ExcessiveMetadataRisk)/100 > a.imgRisk {
+			a.imgRisk = float64(ExcessiveMetadataRisk) / 100
 		}
 	}
 	for _, f := range res.Flagged {

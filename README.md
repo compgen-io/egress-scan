@@ -34,7 +34,7 @@ It checks three independent dimensions:
 | `.npy` `.npz` | array shape (area) from the NumPy header; raw ID scan |
 | `.rds` `.RData` | string scan + data-frame/matrix dimensions via a partial R deserialiser |
 | `.pdf` | text-layer extraction **+** embedded-image noise analysis (pdfcpu) |
-| images (`.png` `.jpg` `.tiff` …) | noise/randomness analysis; **+** OCR with `--ocr` on an OCR build |
+| images (`.png` `.jpg` `.tiff` …) | noise/randomness analysis + embedded-metadata scan (IDs + size); **+** OCR with `--ocr` on an OCR build |
 | `.pkl` `.pickle` | **auto-flagged high-risk** (risk 100) without scanning — opaque, no aggregate-results use case |
 | any other binary | raw-bytes fallback finds literal ASCII IDs |
 | `.h5` `.mat` `.xls` `.doc` `.duckdb` `.7z` `.rar` | flagged **unscanned** for manual review (plus a raw pass) |
@@ -70,6 +70,8 @@ Flags:
 - `--high-risk-threshold` — per-file/tar risk (0–100) above which a file is
   flagged high-risk and the exit code is non-zero (default 30). Operator-tunable;
   no recompile needed.
+- `--image-metadata-limit` — image embedded-metadata size in bytes above which
+  the image is flagged (default 16384). Metadata text is also scanned for IDs.
 - `--ocr` — OCR images (needs a binary built with `-tags ocr`).
 - `--out` — write JSON here (default stdout); `--pretty` toggles indentation.
 
@@ -112,8 +114,11 @@ Every file gets a **0–100 `risk`** = the **max** of its applicable sub-scores:
 - **Data volume** — its largest grid's 0–1 risk, `max(rows/100, area/5000)`, ×100.
   Rows (≈ records/subjects) are the primary driver; area is a backstop for very
   wide tables. Thresholds are tunable constants in `internal/grid`.
-- **Image noise** — its worst image's 0–1 noise (compressibility + entropy +
-  whitespace), ×100. PDF-embedded images roll up to the PDF.
+- **Image** — its worst image's 0–1 noise (compressibility + entropy +
+  whitespace), ×100, **or** an excessive-metadata flag (image embedded metadata
+  over `--image-metadata-limit`, default 16 KB → risk 60). PDF-embedded images
+  roll up to the PDF. IB-IDs found in image metadata (EXIF/XMP/IPTC/PNG-text/
+  JPEG-comment) feed the file's IB-ID score like any other finding.
 
 The tar **`total_risk`** is the worst file's risk, floored at the tar-wide IB/PHI
 score. `high_risk_files` lists every file over the threshold (default 30, set
